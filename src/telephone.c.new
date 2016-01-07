@@ -1,0 +1,1653 @@
+        case STATE_START:
+            switch (digit_value) {
+                case DIGIT_PLUS:
+                    parse_out->parse_state = STATE_CALLING_CODE_START;
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                case DIGIT_STAR:
+                case DIGIT_POUND:
+                    set_parse_out(digit_letter_special(), parse_out, FIELD_DIGITS_QUALIFIER);
+                    set_parse_out(digit_letter, parse_out, FIELD_DIGITS);
+                    parse_out->parse_state = STATE_DIGITS;
+                break;
+                case DIGIT_SPECIAL:
+                case DIGIT_PAUSE:
+                case DIGIT_CONFIRM:
+                case DIGIT_SLASH:
+                    parse_out->parse_state = STATE_START;
+                break;
+             }
+        break;
+        case STATE_CALLING_CODE_START:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    parse_out->parse_state = STATE_CALLING_CODE_START;
+                break;
+                case 1:
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_NANP_NPA_START;
+                break;
+                case 2:
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_CALLING_CODE_ZONE2;
+                break;
+                case 3:
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_CALLING_CODE_ZONE3;
+                break;
+                case 4:
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_CALLING_CODE_ZONE4;
+                break;
+                case 5:
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_CALLING_CODE_ZONE5;
+                break;
+                case 6:
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_CALLING_CODE_ZONE6;
+                break;
+                case 7:
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_RUSSIA_AREA_CODE_START;
+                break;
+                case 8:
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_CALLING_CODE_ZONE8;
+                break;
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_CALLING_CODE_ZONE9;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_CALLING_CODE_START_INVALID;
+                break;
+            }
+        break;
+        case STATE_NANP_NPA_START:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    parse_out->parse_state = STATE_NANP_NPA_START;
+                break;
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_NANP_NPAC);
+                    parse_out->parse_state = STATE_NANP_NPA_DIGITS;
+                    parse_out->field_value = digit_value;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_AREA_CODE_START_INVALID;
+                break;
+            }
+        break;
+        case STATE_NANP_NPA_DIGITS:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_NANP_NPAC);
+                    field_value_add(parse_out);
+                    if (parse_out->field_pos < 3) {
+                        parse_out->parse_state = STATE_NANP_NPA_DIGITS;
+                    } else {
+                        switch (parse_out->field_value) {
+                            case 201: // NJ
+                            case 202: // DC
+                            case 203: // CT
+                            case 204: // MANITOBA
+                            case 205: // AL
+                            case 206: // WA
+                            case 207: // ME
+                            case 208: // ID
+                            case 209: // CA
+                            case 210: // TX
+                            case 212: // NY
+                            case 213: // CA
+                            case 214: // TX
+                            case 215: // PA
+                            case 216: // OH
+                            case 217: // IL
+                            case 218: // MN
+                            case 219: // IN
+                            case 220: // OH
+                            case 224: // IL
+                            case 225: // LA
+                            case 226: // ONTARIO
+                            case 228: // MS
+                            case 229: // GA
+                            case 231: // MI
+                            case 234: // OH
+                            case 236: // BRITISH COLUMBIA
+                            case 239: // FL
+                            case 240: // MD
+                            case 242: // BAHAMAS
+                            case 246: // BARBADOS
+                            case 248: // MI
+                            case 249: // ONTARIO
+                            case 250: // BRITISH COLUMBIA
+                            case 251: // AL
+                            case 252: // NC
+                            case 253: // WA
+                            case 254: // TX
+                            case 256: // AL
+                            case 260: // IN
+                            case 262: // WI
+                            case 264: // ANGUILLA
+                            case 267: // PA
+                            case 268: // ANTIGUA/BARBUDA
+                            case 269: // MI
+                            case 270: // KY
+                            case 272: // PA
+                            case 276: // VA
+                            case 281: // TX
+                            case 284: // BRITISH VIRGIN ISLANDS
+                            case 289: // ONTARIO
+                            case 301: // MD
+                            case 302: // DE
+                            case 303: // CO
+                            case 304: // WV
+                            case 305: // FL
+                            case 306: // SASKATCHEWAN
+                            case 307: // WY
+                            case 308: // NE
+                            case 309: // IL
+                            case 310: // CA
+                            case 312: // IL
+                            case 313: // MI
+                            case 314: // MO
+                            case 315: // NY
+                            case 316: // KS
+                            case 317: // IN
+                            case 318: // LA
+                            case 319: // IA
+                            case 320: // MN
+                            case 321: // FL
+                            case 323: // CA
+                            case 325: // TX
+                            case 330: // OH
+                            case 331: // IL
+                            case 334: // AL
+                            case 336: // NC
+                            case 337: // LA
+                            case 339: // MA
+                            case 340: // USVI
+                            case 343: // ONTARIO
+                            case 345: // CAYMAN ISLANDS
+                            case 346: // TX
+                            case 347: // NY
+                            case 351: // MA
+                            case 352: // FL
+                            case 360: // WA
+                            case 361: // TX
+                            case 364: // KY
+                            case 365: // ONTARIO
+                            case 385: // UT
+                            case 386: // FL
+                            case 401: // RI
+                            case 402: // NE
+                            case 403: // ALBERTA
+                            case 404: // GA
+                            case 405: // OK
+                            case 406: // MT
+                            case 407: // FL
+                            case 408: // CA
+                            case 409: // TX
+                            case 410: // MD
+                            case 412: // PA
+                            case 413: // MA
+                            case 414: // WI
+                            case 415: // CA
+                            case 416: // ONTARIO
+                            case 417: // MO
+                            case 418: // QUEBEC
+                            case 419: // OH
+                            case 423: // TN
+                            case 424: // CA
+                            case 425: // WA
+                            case 430: // TX
+                            case 431: // MANITOBA
+                            case 432: // TX
+                            case 434: // VA
+                            case 435: // UT
+                            case 437: // ONTARIO
+                            case 438: // QUEBEC
+                            case 440: // OH
+                            case 441: // BERMUDA
+                            case 442: // CA
+                            case 443: // MD
+                            case 450: // QUEBEC
+                            case 458: // OR
+                            case 469: // TX
+                            case 470: // GA
+                            case 473: // GRENADA
+                            case 475: // CT
+                            case 478: // GA
+                            case 479: // AR
+                            case 480: // AZ
+                            case 484: // PA
+                            case 501: // AR
+                            case 502: // KY
+                            case 503: // OR
+                            case 504: // LA
+                            case 505: // NM
+                            case 506: // NEW BRUNSWICK
+                            case 507: // MN
+                            case 508: // MA
+                            case 509: // WA
+                            case 510: // CA
+                            case 512: // TX
+                            case 513: // OH
+                            case 514: // QUEBEC
+                            case 515: // IA
+                            case 516: // NY
+                            case 517: // MI
+                            case 518: // NY
+                            case 519: // ONTARIO
+                            case 520: // AZ
+                            case 530: // CA
+                            case 531: // NE
+                            case 534: // WI
+                            case 539: // OK
+                            case 540: // VA
+                            case 541: // OR
+                            case 551: // NJ
+                            case 559: // CA
+                            case 561: // FL
+                            case 562: // CA
+                            case 563: // IA
+                            case 567: // OH
+                            case 570: // PA
+                            case 571: // VA
+                            case 573: // MO
+                            case 574: // IN
+                            case 575: // NM
+                            case 579: // QUEBEC
+                            case 580: // OK
+                            case 581: // QUEBEC
+                            case 585: // NY
+                            case 586: // MI
+                            case 587: // ALBERTA
+                            case 601: // MS
+                            case 602: // AZ
+                            case 603: // NH
+                            case 604: // BRITISH COLUMBIA
+                            case 605: // SD
+                            case 606: // KY
+                            case 607: // NY
+                            case 608: // WI
+                            case 609: // NJ
+                            case 610: // PA
+                            case 612: // MN
+                            case 613: // ONTARIO
+                            case 614: // OH
+                            case 615: // TN
+                            case 616: // MI
+                            case 617: // MA
+                            case 618: // IL
+                            case 619: // CA
+                            case 620: // KS
+                            case 623: // AZ
+                            case 626: // CA
+                            case 628: // CA
+                            case 629: // TN
+                            case 630: // IL
+                            case 631: // NY
+                            case 636: // MO
+                            case 639: // SASKATCHEWAN
+                            case 641: // IA
+                            case 646: // NY
+                            case 647: // ONTARIO
+                            case 649: // TURKS & CAICOS ISLANDS
+                            case 650: // CA
+                            case 651: // MN
+                            case 657: // CA
+                            case 660: // MO
+                            case 661: // CA
+                            case 662: // MS
+                            case 664: // MONTSERRAT
+                            case 667: // MD
+                            case 669: // CA
+                            case 670: // CNMI
+                            case 671: // GU
+                            case 678: // GA
+                            case 681: // WV
+                            case 682: // TX
+                            case 684: // AS
+                            case 701: // ND
+                            case 702: // NV
+                            case 703: // VA
+                            case 704: // NC
+                            case 705: // ONTARIO
+                            case 706: // GA
+                            case 707: // CA
+                            case 708: // IL
+                            case 709: // NEWFOUNDLAND
+                            case 712: // IA
+                            case 713: // TX
+                            case 714: // CA
+                            case 715: // WI
+                            case 716: // NY
+                            case 717: // PA
+                            case 718: // NY
+                            case 719: // CO
+                            case 720: // CO
+                            case 721: // SINT MAARTEN
+                            case 724: // PA
+                            case 725: // NV
+                            case 727: // FL
+                            case 731: // TN
+                            case 732: // NJ
+                            case 734: // MI
+                            case 737: // TX
+                            case 740: // OH
+                            case 747: // CA
+                            case 754: // FL
+                            case 757: // VA
+                            case 758: // ST. LUCIA
+                            case 760: // CA
+                            case 762: // GA
+                            case 763: // MN
+                            case 765: // IN
+                            case 767: // DOMINICA
+                            case 769: // MS
+                            case 770: // GA
+                            case 772: // FL
+                            case 773: // IL
+                            case 774: // MA
+                            case 775: // NV
+                            case 778: // BRITISH COLUMBIA
+                            case 779: // IL
+                            case 780: // ALBERTA
+                            case 781: // MA
+                            case 782: // NOVA SCOTIA - PRINCE EDWARD ISLAND
+                            case 784: // ST. VINCENT & GRENADINES
+                            case 785: // KS
+                            case 786: // FL
+                            case 787: // PUERTO RICO
+                            case 801: // UT
+                            case 802: // VT
+                            case 803: // SC
+                            case 804: // VA
+                            case 805: // CA
+                            case 806: // TX
+                            case 807: // ONTARIO
+                            case 808: // HI
+                            case 809: // DOMINICAN REPUBLIC
+                            case 810: // MI
+                            case 812: // IN
+                            case 813: // FL
+                            case 814: // PA
+                            case 815: // IL
+                            case 816: // MO
+                            case 817: // TX
+                            case 818: // CA
+                            case 819: // QUEBEC
+                            case 828: // NC
+                            case 829: // DOMINICAN REPUBLIC
+                            case 830: // TX
+                            case 831: // CA
+                            case 832: // TX
+                            case 843: // SC
+                            case 845: // NY
+                            case 847: // IL
+                            case 848: // NJ
+                            case 849: // DOMINICAN REPUBLIC
+                            case 850: // FL
+                            case 854: // SC
+                            case 856: // NJ
+                            case 857: // MA
+                            case 858: // CA
+                            case 859: // KY
+                            case 860: // CT
+                            case 862: // NJ
+                            case 863: // FL
+                            case 864: // SC
+                            case 865: // TN
+                            case 867: // YUKON-NW TERR. - NUNAVUT
+                            case 868: // TRINIDAD & TOBAGO
+                            case 869: // ST. KITTS & NEVIS
+                            case 870: // AR
+                            case 872: // IL
+                            case 873: // QUEBEC
+                            case 876: // JAMAICA
+                            case 878: // PA
+                            case 901: // TN
+                            case 902: // NOVA SCOTIA - PRINCE EDWARD ISLAND
+                            case 903: // TX
+                            case 904: // FL
+                            case 905: // ONTARIO
+                            case 906: // MI
+                            case 907: // AK
+                            case 908: // NJ
+                            case 909: // CA
+                            case 910: // NC
+                            case 912: // GA
+                            case 913: // KS
+                            case 914: // NY
+                            case 915: // TX
+                            case 916: // CA
+                            case 917: // NY
+                            case 918: // OK
+                            case 919: // NC
+                            case 920: // WI
+                            case 925: // CA
+                            case 928: // AZ
+                            case 929: // NY
+                            case 930: // IN
+                            case 931: // TN
+                            case 936: // TX
+                            case 937: // OH
+                            case 938: // AL
+                            case 939: // PUERTO RICO
+                            case 940: // TX
+                            case 941: // FL
+                            case 947: // MI
+                            case 949: // CA
+                            case 951: // CA
+                            case 952: // MN
+                            case 954: // FL
+                            case 956: // TX
+                            case 959: // CT
+                            case 970: // CO
+                            case 971: // OR
+                            case 972: // TX
+                            case 973: // NJ
+                            case 978: // MA
+                            case 979: // TX
+                            case 980: // NC
+                            case 984: // NC
+                            case 985: // LA
+                            case 989: // MI
+                                parse_out->parse_state = STATE_NANP_COC_START;
+                                parse_out->service_type = SERVICE_OTHER_GEO;
+                            break;
+                            case 227: // MD
+                            case 274: // WI
+                            case 283: // OH
+                            case 327: // AR
+                            case 380: // OH
+                            case 447: // IL
+                            case 463: // IN
+                            case 464: // IL
+                            case 548: // ONTARIO
+                            case 557: // MO
+                            case 564: // WA
+                            case 659: // AL
+                            case 679: // MI
+                            case 680: // NY
+                            case 689: // FL
+                            case 730: // IL
+                            case 743: // NC
+                            case 825: // ALBERTA
+                            case 934: // NY
+                            case 975: // MO
+                                // Planned, but not yet in service
+                                parse_out->parse_state = STATE_NANP_COC_START;
+                                parse_out->service_type = SERVICE_OTHER_GEO;
+                            break;
+                            case 456: // Inbound International
+                            case 500: // Non-Geographic Services
+                            case 533: // Non-Geographic Services
+                            case 544: // Non-Geographic Services
+                            case 566: // Non-Geographic Services
+                            case 577: // Non-Geographic Services
+                            case 588: // Personal Communication Service
+                            case 600: // Canadian Services
+                            case 622: // Canadian Non-Geographic Services
+                            case 700: // Interexchange Carrier Services
+                            case 710: // US Government
+                                parse_out->parse_state = STATE_NANP_COC_START;
+                                parse_out->service_type = SERVICE_OTHER;
+                            break;
+                            case 800: // Toll-Free
+                            case 844: // Toll-Free
+                            case 855: // Toll-Free
+                            case 866: // Toll-Free
+                            case 877: // Toll-Free
+                            case 888: // Toll-Free
+                                parse_out->parse_state = STATE_NANP_COC_START;
+                                parse_out->service_type = SERVICE_TOLLFREE;
+                            break;
+                            case 900: // Premium Services
+                                parse_out->parse_state = STATE_NANP_COC_START;
+                                parse_out->service_type = SERVICE_CHARGE;
+                            break;
+                            default:
+                                parse_out->parse_state  = STATE_ERROR;
+                                parse_out->error_code   = ERROR_AREA_CODE_NOT_FOUND;
+                            break;
+                        }
+                        //parse_out->service_type = SERVICE_QUERY_NANP;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_AREA_CODE_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_NANP_COC_START:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    parse_out->parse_state = STATE_NANP_COC_START;
+                break;
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_NANP_COC);
+                    parse_out->parse_state = STATE_NANP_COC_DIGITS;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_EXCHANGE_CODE_START_INVALID;
+                break;
+            }
+        break;
+        case STATE_NANP_COC_DIGITS:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_NANP_COC);
+                    if (parse_out->field_pos < 3) {
+                        parse_out->parse_state = STATE_NANP_COC_DIGITS;
+                    } else {
+                        parse_out->parse_state = STATE_NANP_SUB_START;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_EXCHANGE_CODE_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_NANP_SUB_START:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    parse_out->parse_state = STATE_NANP_SUB_START;
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_NANP_SUB);
+                    parse_out->parse_state = STATE_NANP_SUB_DIGITS;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_SUBSCRIBER_NUM_START_INVALID;
+                break;
+            }
+        break;
+        case STATE_NANP_SUB_DIGITS:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_NANP_SUB);
+                    if (parse_out->field_pos < 4) {
+                        parse_out->parse_state = STATE_NANP_SUB_DIGITS;
+                    } else {
+                        parse_out->parse_state = STATE_EXTENSION_START;
+                        parse_out->field_pos = 0;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_EXTENSION_START:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                case DIGIT_PAUSE:
+                case DIGIT_CONFIRM:
+                    parse_out->parse_state = STATE_EXTENSION_START;
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                case DIGIT_STAR:
+                case DIGIT_POUND:
+                    set_parse_out(digit_letter, parse_out, FIELD_EXTENSION);
+                    parse_out->parse_state = STATE_EXTENSION_DIGITS;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_EXTENSION_START_INVALID;
+                break;
+            }
+        break;
+        case STATE_EXTENSION_DIGITS:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                case DIGIT_STAR:
+                case DIGIT_POUND:
+                case DIGIT_PAUSE:
+                case DIGIT_CONFIRM:
+                case DIGIT_SPECIAL:
+                case DIGIT_SLASH:
+                    set_parse_out(digit_letter, parse_out, FIELD_EXTENSION);
+                    parse_out->parse_state = STATE_EXTENSION_DIGITS;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_EXTENSION_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_DIGITS:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                case DIGIT_STAR:
+                case DIGIT_POUND:
+                case DIGIT_PAUSE:
+                case DIGIT_CONFIRM:
+                case DIGIT_SPECIAL:
+                case DIGIT_SLASH:
+                    set_parse_out(digit_letter, parse_out, FIELD_DIGITS);
+                    parse_out->parse_state = STATE_DIGITS;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_DIGITS_INVALID;
+                break;
+             }
+        break;
+        case STATE_DIGITS_IGNORE_QUALIFIER:
+            parse_out->parse_state      = STATE_DIGITS;
+        break;
+        case STATE_CALLING_CODE_ZONE2: // mostly Africa
+            switch (digit_value) {
+                case 0: // Egypt
+                case 7: // South Africa
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 8:
+                case 9:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_CALLING_CODE_NEED_CODE;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_CALLING_CODE_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_CALLING_CODE_ZONE3: // Europe
+            switch (digit_value) {
+                case 0: // Greece
+                case 1: // Netherlands
+                case 2: // Belgium
+                case 3: // France
+                case 4: // Spain
+                case 6: // Hungary
+                case 9: // Italy
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_CALLING_CODE_NEED_CODE;
+                break;
+                case 5:
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_CALLING_CODE_35;
+                break;
+                case 7:
+                case 8:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_CALLING_CODE_NEED_CODE;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_CALLING_CODE_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_CALLING_CODE_35:
+            switch (digit_value) {
+                case 8: // Finland
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_FINLAND_AREA_START;
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 9:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_CALLING_CODE_NEED_CODE;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_CALLING_CODE_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_FINLAND_AREA_START:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    parse_out->parse_state = STATE_FINLAND_AREA_START;
+                break;
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_FINLAND_AREA_CODE);
+                    parse_out->parse_state = STATE_FINLAND_AREA_DIGITS;
+                    parse_out->field_value = digit_value;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_AREA_CODE_START_INVALID;
+                break;
+            }
+        break;
+        case STATE_FINLAND_AREA_DIGITS:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_FINLAND_AREA_CODE);
+                    parse_out->parse_state = STATE_FINLAND_AREA_DIGITS;
+                    field_value_add(parse_out);
+                    switch (parse_out->field_value) {
+                        case 40:
+                        case 41:
+                        case 42:
+                        case 43:
+                        case 44:
+                        case 45:
+                        case 46:
+                        case 49:
+                        case 50:
+                            parse_out->parse_state      = STATE_FINLAND_SUB_1_3_2_2;
+                            parse_out->field_pos        = 0;
+                            parse_out->service_type     = SERVICE_CELL;
+                        break;
+                        case 800:
+                            parse_out->parse_state      = STATE_FINLAND_SUB_1_3_3;
+                            parse_out->field_pos        = 0;
+                            parse_out->service_type     = SERVICE_TOLLFREE;
+                        break;
+                        default:
+                            if (parse_out->field_pos == 3) {
+                                parse_out->parse_state  = STATE_ERROR;
+                                parse_out->error_code   = ERROR_AREA_CODE_NOT_FOUND;
+                            }
+                        break;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_AREA_CODE_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_FINLAND_SUB_1_3_2_2:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0) {
+                        parse_out->parse_state = STATE_FINLAND_SUB_1_3_2_2;
+                    } else {
+                        parse_out->parse_state      = STATE_ERROR;
+                        parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                    }
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_FINLAND_SUB1);
+                    if (parse_out->field_pos < 3) {
+                        parse_out->parse_state = STATE_FINLAND_SUB_1_3_2_2;
+                    } else {
+                        parse_out->parse_state = STATE_FINLAND_SUB_2_2_2;
+                        parse_out->field_pos = 0;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_FINLAND_SUB_2_2_2:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0) {
+                        parse_out->parse_state = STATE_FINLAND_SUB_2_2_2;
+                    } else {
+                        parse_out->parse_state      = STATE_ERROR;
+                        parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                    }
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_FINLAND_SUB2);
+                    if (parse_out->field_pos < 2) {
+                        parse_out->parse_state = STATE_FINLAND_SUB_2_2_2;
+                    } else {
+                        parse_out->parse_state = STATE_FINLAND_SUB_3_2;
+                        parse_out->field_pos = 0;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_FINLAND_SUB_3_2:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0) {
+                        parse_out->parse_state = STATE_FINLAND_SUB_3_2;
+                    } else {
+                        parse_out->parse_state      = STATE_ERROR;
+                        parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                    }
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_FINLAND_SUB3);
+                    if (parse_out->field_pos < 2) {
+                        parse_out->parse_state = STATE_FINLAND_SUB_3_2;
+                    } else {
+                        parse_out->parse_state  = STATE_EXTENSION_START;
+                        parse_out->field_pos    = 0;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_FINLAND_SUB_1_3_3:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0) {
+                        parse_out->parse_state = STATE_FINLAND_SUB_1_3_3;
+                    } else {
+                        parse_out->parse_state      = STATE_ERROR;
+                        parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                    }
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_FINLAND_SUB1);
+                    if (parse_out->field_pos < 3) {
+                        parse_out->parse_state = STATE_FINLAND_SUB_1_3_3;
+                    } else {
+                        parse_out->parse_state = STATE_FINLAND_SUB_2_3;
+                        parse_out->field_pos = 0;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_FINLAND_SUB_2_3:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0) {
+                        parse_out->parse_state = STATE_FINLAND_SUB_3_2;
+                    } else {
+                        parse_out->parse_state      = STATE_ERROR;
+                        parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                    }
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_FINLAND_SUB2);
+                    if (parse_out->field_pos < 3) {
+                        parse_out->parse_state = STATE_FINLAND_SUB_2_3;
+                    } else {
+                        parse_out->parse_state  = STATE_EXTENSION_START;
+                        parse_out->field_pos    = 0;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_CALLING_CODE_ZONE4: // Europe
+            switch (digit_value) {
+                case 4: // United Kingdom
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_UK_AREA_START;
+                break;
+                case 0: // Romania
+                case 1: // Switzerland
+                case 3: // Austria
+                case 5: // Denmark
+                case 6: // Sweden
+                case 7: // Norway
+                case 8: // Poland
+                case 9: // Germany
+                case 2:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_CALLING_CODE_NEED_CODE;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_CALLING_CODE_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_UK_AREA_START:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    parse_out->parse_state = STATE_UK_AREA_START;
+                break;
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_UK_AREA_CODE);
+                    parse_out->parse_state = STATE_UK_AREA_DIGIT2;
+                    parse_out->field_value = digit_value;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_AREA_CODE_START_INVALID;
+                break;
+            }
+        break;
+        case STATE_UK_AREA_DIGIT2:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_UK_AREA_CODE);
+                    field_value_add(parse_out);
+                    switch (parse_out->field_value) {
+                        case 20:
+                        case 23:
+                        case 24:
+                        case 28:
+                        case 29:
+                            // 2+8 only: (02x) xxxx xxxx
+                            parse_out->parse_state = STATE_UK_SUB_1_4_4;
+                            parse_out->field_pos = 0;
+                        break;
+                        case 70:
+                        case 71:
+                        case 73:
+                        case 74:
+                        case 75:
+                        case 76:
+                        case 77:
+                        case 78:
+                        case 79:
+                            parse_out->parse_state = STATE_UK_AREA_1_4_6;
+                        break;
+                        default:
+                            parse_out->parse_state = STATE_UK_AREA_DIGIT3;
+                        break;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_AREA_CODE_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_UK_AREA_DIGIT3:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_UK_AREA_CODE);
+                    field_value_add(parse_out);
+                    switch (parse_out->field_value) {
+                        case 113:
+                        case 114:
+                        case 115:
+                        case 116:
+                        case 117:
+                        case 118:
+                        case 121:
+                        case 131:
+                        case 141:
+                        case 151:
+                        case 161:
+                        case 191:
+                        case 300:
+                        case 302:
+                        case 303:
+                        case 306:
+                        case 330:
+                        case 331:
+                        case 332:
+                        case 333:
+                        case 343:
+                        case 344:
+                        case 345:
+                        case 370:
+                        case 371:
+                        case 372:
+                            // 3+7 only: (011x) xxx xxxx
+                            // 3+7 only: (01x1) xxx xxxx
+                            parse_out->parse_state = STATE_UK_SUB_1_3_4;
+                            parse_out->field_pos = 0;
+                        break;
+                        case 500:
+                            parse_out->parse_state      = STATE_ERROR;
+                            parse_out->error_code       = ERROR_NUMBER_OBSOLETE;
+                        break;
+                        case 800:
+                            parse_out->parse_state = STATE_UK_SUB_1_6;
+                            parse_out->field_pos = 0;
+                        break;
+                        case 808:
+                        case 843:
+                        case 844:
+                        case 845:
+                        case 870:
+                        case 871:
+                        case 872:
+                        case 900:
+                        case 901:
+                        case 902:
+                        case 903:
+                        case 904:
+                        case 905:
+                        case 906:
+                        case 907:
+                        case 908:
+                        case 909:
+                        case 911:
+                        case 912:
+                        case 913:
+                        case 982:
+                        case 983:
+                        case 984:
+                        case 989:
+                            parse_out->parse_state = STATE_UK_SUB_1_3_4;
+                            parse_out->field_pos = 0;
+                        break;
+                        break;
+                        default:
+                            parse_out->parse_state = STATE_UK_AREA_DIGIT4;
+                        break;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_AREA_CODE_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_UK_AREA_DIGIT4:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_UK_AREA_CODE);
+                    field_value_add(parse_out);
+                    switch (parse_out->field_value) {
+                        case 1387:
+                        case 1539:
+                            // 4+6 areas where part of range is assigned as 5+5
+                        case 1697:
+                            // 10 or 9, 4+6 areas where part of range is assigned as mixed 5+5 and 5+4
+                        case 1204:
+                        case 1208:
+                        case 1254:
+                        case 1276:
+                        case 1297:
+                        case 1298:
+                        case 1363:
+                        case 1364:
+                        case 1384:
+                        case 1386:
+                        case 1404:
+                        case 1420:
+                        case 1460:
+                        case 1461:
+                        case 1480:
+                        case 1488:
+                        case 1527:
+                        case 1562:
+                        case 1566:
+                        case 1606:
+                        case 1629:
+                        case 1635:
+                        case 1647:
+                        case 1659:
+                        case 1695:
+                        case 1726:
+                        case 1744:
+                        case 1750:
+                        case 1827:
+                        case 1837:
+                        case 1884:
+                        case 1900:
+                        case 1905:
+                        case 1935:
+                        case 1949:
+                        case 1963:
+                        case 1995:
+                            // Mixed 4+6 and 4+5: (01xx xx) xxxxx
+                        case 1524:
+                        case 1768:
+                        case 1946:
+                            // Mixed 4+6 and 4+5 areas where part of range is assigned as 5+5
+                            parse_out->parse_state      = STATE_ERROR;
+                            parse_out->error_code       = ERROR_NEED_LENGTH_CODE;
+                        break;
+                        case 1632:
+                            // fictional use, sub 960000 to 960999 are officially reserved
+                            parse_out->parse_state = STATE_UK_SUB_1_6;
+                            parse_out->field_pos = 0;
+                        break;
+                        case 5511:
+                        case 5516:
+                        case 5555:
+                        case 5588:
+                        case 5600:
+                        case 5601:
+                        case 5602:
+                        case 5603:
+                            parse_out->parse_state = STATE_UK_SUB_1_6;
+                            parse_out->field_pos = 0;
+                        break;
+                        default:
+                            parse_out->parse_state = STATE_UK_AREA_DIGIT5;
+                        break;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_AREA_CODE_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_UK_AREA_DIGIT5:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_UK_AREA_CODE);
+                    field_value_add(parse_out);
+                    switch (parse_out->field_value) {
+                        case 13873:
+                        case 15242:
+                        case 15394:
+                        case 15395:
+                        case 15396:
+                        case 16973:
+                        case 16974:
+                        case 17683:
+                        case 17684:
+                        case 17687:
+                        case 19467:
+                            // 5+5 only
+                            parse_out->parse_state = STATE_UK_SUB_1_5;
+                            parse_out->field_pos = 0;
+                        break;
+                        case 16977:
+                            // Mixed 5+5 and 5+4: (0169 77) xxxx
+                            parse_out->parse_state      = STATE_ERROR;
+                            parse_out->error_code       = ERROR_NEED_LENGTH_CODE;
+                        break;
+                        default:
+                            parse_out->parse_state      = STATE_ERROR;
+                            parse_out->error_code       = ERROR_AREA_CODE_NOT_FOUND;
+                        break;
+
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_AREA_CODE_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_UK_AREA_1_4_6:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_UK_AREA_CODE);
+                    if (parse_out->field_pos < 4) {
+                        parse_out->parse_state = STATE_UK_AREA_1_4_6;
+                    } else {
+                        parse_out->parse_state = STATE_UK_SUB_1_6;
+                        parse_out->field_pos = 0;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_UK_SUB_1_3_4:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0) {
+                        parse_out->parse_state = STATE_UK_SUB_1_3_4;
+                    } else {
+                        parse_out->parse_state      = STATE_ERROR;
+                        parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                    }
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_UK_SUB1);
+                    if (parse_out->field_pos < 3) {
+                        parse_out->parse_state = STATE_UK_SUB_1_3_4;
+                    } else {
+                        parse_out->parse_state = STATE_UK_SUB_2_4;
+                        parse_out->field_pos = 0;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_UK_SUB_1_4_4:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0) {
+                        parse_out->parse_state = STATE_UK_SUB_1_4_4;
+                    } else {
+                        parse_out->parse_state      = STATE_ERROR;
+                        parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                    }
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_UK_SUB1);
+                    if (parse_out->field_pos < 4) {
+                        parse_out->parse_state = STATE_UK_SUB_1_4_4;
+                    } else {
+                        parse_out->parse_state = STATE_UK_SUB_2_4;
+                        parse_out->field_pos = 0;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_UK_SUB_1_6:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0) {
+                        parse_out->parse_state  = STATE_UK_SUB_1_6;
+                    } else {
+                        parse_out->parse_state  = STATE_ERROR;
+                        parse_out->error_code   = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                    }
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_UK_SUB1);
+                    if (parse_out->field_pos < 6) {
+                        parse_out->parse_state  = STATE_UK_SUB_1_6;
+                    } else {
+                        parse_out->parse_state  = STATE_EXTENSION_START;
+                        parse_out->field_pos    = 0;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_UK_SUB_2_4:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0) {
+                        parse_out->parse_state = STATE_UK_SUB_2_4;
+                    } else {
+                        parse_out->parse_state      = STATE_ERROR;
+                        parse_out->error_code       = ERROR_SUBSCRIBER_NUM_START2_INVALID;
+                    }
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_UK_SUB2);
+                    if (parse_out->field_pos < 4) {
+                        parse_out->parse_state  = STATE_UK_SUB_2_4;
+                    } else {
+                        parse_out->parse_state  = STATE_EXTENSION_START;
+                        parse_out->field_pos    = 0;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_UK_SUB_1_5:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0) {
+                        parse_out->parse_state = STATE_UK_SUB_1_5;
+                    } else {
+                        parse_out->parse_state      = STATE_ERROR;
+                        parse_out->error_code       = ERROR_SUBSCRIBER_NUM_START_INVALID;
+                    }
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_UK_SUB1);
+                    if (parse_out->field_pos < 5) {
+                        parse_out->parse_state  = STATE_UK_SUB_1_5;
+                    } else {
+                        parse_out->parse_state  = STATE_EXTENSION_START;
+                        parse_out->field_pos    = 0;
+                    }
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_SUBSCRIBER_NUM_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_CALLING_CODE_ZONE5: // mostly Latin America
+            switch (digit_value) {
+                case 1: // Peru
+                case 2: // Mexico
+                case 3: // Cuba
+                case 4: // Argentina
+                case 5: // Brazil
+                case 6: // Chile
+                case 7: // Colombia
+                case 8: // Venezuela
+                case 0:
+                case 9:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_CALLING_CODE_NEED_CODE;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_CALLING_CODE_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_CALLING_CODE_ZONE6: // Southeast Asia and Oceania
+            switch (digit_value) {
+                case 1: // Australia
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_AUSTRALIA_AREA_START;
+                break;
+                case 0: // Malaysia
+                case 2: // Indonesia
+                case 3: // Philippines
+                case 4: // New Zealand
+                case 5: // Singapore
+                case 6: // Thailand
+                case 7:
+                case 8:
+                case 9:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_CALLING_CODE_NEED_CODE;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_CALLING_CODE_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_AUSTRALIA_AREA_START:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    parse_out->parse_state      = STATE_AUSTRALIA_AREA_START;
+                break;
+                case 2:
+                case 3:
+                case 7:
+                case 8:
+                    set_parse_out(digit_letter, parse_out, FIELD_AUSTRALIA_AREA_CODE);
+                    parse_out->field_pos        = 0;
+                    parse_out->parse_state      = STATE_AUSTRALIA_SUB_1_4_4;
+                    parse_out->service_type     = SERVICE_LAND;
+                break;
+                case 4:
+                    set_parse_out(digit_letter, parse_out, FIELD_AUSTRALIA_AREA_CODE);
+                    parse_out->field_pos        = 0;
+                    parse_out->parse_state      = STATE_AUSTRALIA_AREA_1_3_3_3;
+                    parse_out->field_value      = digit_value;
+                    parse_out->service_type     = SERVICE_CELL;
+                break;
+                default:
+                    parse_out->parse_state      = STATE_ERROR;
+                    parse_out->error_code       = ERROR_AREA_CODE_DIGITS_INVALID;
+                break;
+            }
+        break;
+        case STATE_AUSTRALIA_SUB_1_4_4:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0)
+                        parse_out->parse_state = STATE_AUSTRALIA_SUB_1_4_4;
+                    else
+                        set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, );
+                break;
+            }
+        break;
