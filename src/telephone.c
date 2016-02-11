@@ -1,19 +1,34 @@
+/*
+Copyright (c) 2016, PostgreSQL Global Development Group
+*/
 
 #include "postgres.h"
 #include "fmgr.h"
 #include "libpq/pqformat.h"             /* needed for send/recv functions */
 #include "access/hash.h"                /* needed for hash_any function */
 #include "utils/builtins.h"             /* needed for cstring_to_text function */
+// Enum:
+#include "catalog/namespace.h"
+#include "catalog/pg_enum.h"
+#include "utils/syscache.h"
+#include "utils/catcache.h"
+//#include "funcapi.h"
+//#include "mb/pg_wchar.h"
+//#include "utils/lsyscache.h"
+#include "access/htup_details.h"
+#include "utils/array.h"
+// Array:
+#include "catalog/pg_type.h"
+#include "utils/lsyscache.h"
 
 PG_MODULE_MAGIC;
 
-/*typedef struct Telephone
-{
-        int             len;
-        char            *hex;
-}       Telephone;*/
+#define MAX_DIGITS 64
+#define MAX_STORAGE_HEADER 4
 
-
+// For subscriber formatting: space group number, list of next groups with the number indicating the number of spaces in the groups.
+// Last used:
+// grep '^#define STATE_' src/telephone.c | grep -v '^99' | tr -s ' ' | cut -d ' ' -f 3 | grep -v '^99' | sort | tail -n 1
 #define STATE_ERROR                     501
 #define STATE_START                     502
 #define STATE_DIGITS_IGNORE_QUALIFIER   503
@@ -85,6 +100,20 @@ PG_MODULE_MAGIC;
 #define STATE_JAPAN_AREA_DIGIT3         572
 #define STATE_JAPAN_AREA_DIGIT4         573
 #define STATE_JAPAN_AREA_DIGIT5         574
+#define STATE_FRANCE_START              580
+#define STATE_FRANCE_DIGITS             581
+#define STATE_ITALY_AREA_START          582
+#define STATE_ITALY_AREA_DIGIT2         583
+#define STATE_ITALY_AREA_DIGIT3         584
+#define STATE_ITALY_AREA_DIGIT4         585
+#define STATE_ITALY_SUB_1_8             586
+#define STATE_ITALY_SUB_1_7             587
+#define STATE_ITALY_SUB_1_6             588
+#define STATE_ITALY_CELL_PREFIX         589
+#define STATE_ITALY_EX                  590
+#define STATE_ITALY_SUB_1_4             591
+#define STATE_ITALY_SUB_2_3_3           592
+#define STATE_ITALY_SUB_2_3             593
 #define STATE_EXTENSION_START           998 // Value must be higher than all calling code states.
 #define STATE_EXTENSION_DIGITS          999
 
@@ -125,25 +154,7 @@ PG_MODULE_MAGIC;
 #define DIGIT_POUND     11
 #define DIGIT_PLUS      12 // Never stored.  + is implied when DIGIT_SPECIAL is not at the start.
 
-// SERVICE does not store fictitious status.  Fictitious numbers need to use the same service types.
-#define SERVICE_NEED_TO_PARSE   100 // The parser has not read enough digits to know the service type.
-#define SERVICE_UNKNOWN_UNKNOWN 101 // The code does not know the service type.
-#define SERVICE_KNOWN_UNKNOWN   102 // The number plan indicates that the service type is unknowable.
-#define SERVICE_LAND            103
-#define SERVICE_TOLLFREE        104
-#define SERVICE_CHARGE          105
-#define SERVICE_CELL            106
-#define SERVICE_OTHER           107 // The number plan indicates the service type, but it does not fit into a list of generic types.
-#define SERVICE_OTHER_GEO       108 // Multiple services, but allocated by geography.
-//#define SERVICE_QUERY_NANP      128 // Query functions are required if there is any computation cost to know the service type.
-#define SERVICE_QUERY_RUSSIA    129
-
-#define FICTITIOUS_REAL                     185 // No fictitious attributes.
-#define FICTITIOUS_REAL_MISTAKEN            186 // Public may mistake this as fictitious, but this can be in use by a real service.
-#define FICTITIOUS_REAL_FICTITIOUS          187 // Owned for fictitious use, but it could be sold for real use at a later time.
-#define FICTITIOUS_FICTITIOUS_UNRESERVED    188 // Recognized as fictitious, has no service, but this may change in the future.
-#define FICTITIOUS_FICTITIOUS_RESERVED      189 // Officially allocated for fictitious use only.
-
+// grep '^#define FIELD_' src/telephone.c | tr -s ' ' | cut -d ' ' -f 3 | grep -v '^99' | sort | tail -n 1
 #define FIELD_INVALID                   20
 #define FIELD_CALLING_CODE              21
 #define FIELD_NANP_NPAC                 24
@@ -172,10 +183,12 @@ PG_MODULE_MAGIC;
 #define FIELD_FINLAND_SUB1              49
 #define FIELD_FINLAND_SUB2              50
 #define FIELD_FINLAND_SUB3              51
-
-#define FORMAT_INTERNATIONAL            190
-#define FORMAT_DOMESTIC                 191
-#define FORMAT_DIGITS_ONLY              192
+#define FIELD_FRANCE_AREA_CODE          57
+#define FIELD_FRANCE_SUB                52
+#define FIELD_ITALY_AREA_CODE           53
+#define FIELD_ITALY_EX_CODE             54
+#define FIELD_ITALY_SUB1                55
+#define FIELD_ITALY_SUB2                56
 
 #define VALUEMASK_LETTER              0b00000111
 #define VALUEMASK_WHITESPACE          0b00001000
@@ -191,6 +204,101 @@ PG_MODULE_MAGIC;
 #define CONFIRM_IS_DATA                 0
 #define PAUSE_IS_DATA                   0
 
+#define PAUSE_IS_DATA                   0
+
+#define CALLING_CODE_FORMATTING_MAX_LEN 7
+
+typedef struct
+{
+    int         index;
+    const char *label;
+}   EnumLabel;
+
+void getEnumLabelOids(const char *typname, EnumLabel labels[], Oid oid_out[], int count);
+
+enum TelephoneFormat {TFORM_INTERNATIONAL, TFORM_DOMESTIC, TFORM_DIGITS_ONLY, TFORM_FORMAT_COUNT};
+
+static EnumLabel telephone_format_labels[TFORM_FORMAT_COUNT] =
+    {
+        {TFORM_INTERNATIONAL,   "international"},
+        {TFORM_DOMESTIC,        "domestic"},
+        {TFORM_DIGITS_ONLY,     "digits_only"}
+    };
+
+enum TelephoneSubfield {TSF_DIGITS, TSF_CALLING_CODE,
+    TSF_GROUP1, TSF_GROUP2, TSF_GROUP3, TSF_GROUP4,
+    TSF_SUBSCRIBER, TSF_EXTENSION, TSF_SUBFIELD_COUNT};
+
+static EnumLabel telephone_subfield_labels[TSF_SUBFIELD_COUNT] =
+    {
+        {TSF_DIGITS,        "digits"},
+        {TSF_CALLING_CODE,  "calling_code"},
+        {TSF_GROUP1,        "group1"},
+        {TSF_GROUP2,        "group2"},
+        {TSF_GROUP3,        "group3"},
+        {TSF_GROUP4,        "group4"},
+        {TSF_SUBSCRIBER,    "subscriber"},
+        {TSF_EXTENSION,     "extension"}
+    };
+
+// TelephoneService does not store fictitious status.  Fictitious numbers need to use the same service types.
+enum TelephoneService {
+    TSERV_UNKNOWN_UNKNOWN,  // The code does not know the service type.
+    TSERV_KNOWN_UNKNOWN,    // The number plan indicates that the service type is unknowable.
+    TSERV_LAND, TSERV_OTHER_GEO, TSERV_LAND_OR_CELL, TSERV_CELL, TSERV_PAGER, TSERV_VOIP, TSERV_FOLLOW_ME,
+    TSERV_TOLLFREE, TSERV_SHARED_COST, TSERV_CALLER_COST, TSERV_CHARGE,
+    TSERV_CARRIER_SERVICES_INTRA, TSERV_CARRIER_SERVICES_INTERNATIONAL, TSERV_GOVERNMENT,
+    TSERV_VOICEMAIL, TSERV_OTHER, TSERV_SERVICE_COUNT,
+    TSERV_NEED_TO_PARSE,    // The parser has not read enough digits to know the service type.
+    TSERV_QUERY_RUSSIA};    // Query functions are required if there is any computation cost to know the service type.
+
+static EnumLabel telephone_service_labels[TSERV_SERVICE_COUNT] =
+    {
+        {TSERV_UNKNOWN_UNKNOWN, "unknown_unknown"},
+        {TSERV_KNOWN_UNKNOWN,   "known_unknown"},
+        {TSERV_LAND,            "land"},
+        {TSERV_OTHER_GEO,       "other_geo"},
+        {TSERV_LAND_OR_CELL,    "land_or_cell"},
+        {TSERV_CELL,            "cell"},
+        {TSERV_PAGER,           "pager"},
+        {TSERV_VOIP,            "voip"},
+        {TSERV_FOLLOW_ME,       "follow_me"},
+        {TSERV_TOLLFREE,        "tollfree"},
+        {TSERV_SHARED_COST,     "shared_cost"},
+        {TSERV_CALLER_COST,     "caller_cost"},
+        {TSERV_CHARGE,          "charge"},
+        {TSERV_CARRIER_SERVICES_INTRA,"carrier_services_intra"}, // Unique services accessible from within the carrier's network.
+        {TSERV_CARRIER_SERVICES_INTERNATIONAL,"carrier_services_international"},
+        {TSERV_GOVERNMENT,      "government"},
+        {TSERV_VOICEMAIL,       "voicemail"},
+        {TSERV_OTHER,           "other"}
+    };
+
+enum TelephoneFictitious {
+    TFICT_REAL,                     // No fictitious attributes.
+    TFICT_REAL_MISTAKEN,            // The public may mistake this as fictitious, but this can be in use by a real service.
+    TFICT_REAL_FICTITIOUS,          // Owned for fictitious use, but it could be sold for real use at a later time.
+    TFICT_FICTITIOUS_UNRESERVED,    // Recognized as fictitious, has no service, but this may change in the future.
+    TFICT_FICTITIOUS_RESERVED,      // Officially allocated for fictitious use only.
+    TFICT_FICTITIOUS_COUNT};
+
+static EnumLabel telephone_fictitious_labels[TFICT_FICTITIOUS_COUNT] =
+    {
+        {TFICT_REAL,                    "real"},
+        {TFICT_REAL_MISTAKEN,           "real_mistaken"},
+        {TFICT_REAL_FICTITIOUS,         "real_fictitious"},
+        {TFICT_FICTITIOUS_UNRESERVED,   "fictitious_unreserved"},
+        {TFICT_FICTITIOUS_RESERVED,     "fictitious_reserved"}
+    };
+
+enum TelephoneMode {TMODE_CALLING_CODE, TMODE_DIGITS, TMODE_MODE_COUNT};
+
+static EnumLabel telephone_mode_labels[TMODE_MODE_COUNT] =
+    {
+        {TMODE_CALLING_CODE,    "calling_code"},
+        {TMODE_DIGITS,          "digits"}
+    };
+
 struct digit_letter {
     int value;
     uint letter_index;
@@ -199,16 +307,16 @@ struct digit_letter {
 
 struct parse_buffer {
     uint parse_state;
-    uint alt_state;
+    uint alt_state; // Used for when ranges with more digits overlap with different ranges with smaller digits.
     uint digit_pos_next;
-    int digit_values[64];
-    uint digit_valuesmask[64];
-    uint digit_fields[64];
+    int digit_values[MAX_DIGITS];       // Used for determining identity/equality.
+    uint digit_valuesmask[MAX_DIGITS];  // Not used for determining identity/equality.
+    uint digit_fields[MAX_DIGITS];      // Used for text formatting.  Not accurate enough for being exposed in a public function.
     uint field_pos;
-    uint field_value;
-    uint service_type;
+    uint field_value; // Only populated when needed for branching.
+    enum TelephoneService service_type;
     uint error_code;
-    uint code_id;
+    uint code_id; // A unique ID for locating the code that set the error.
 };
 
 /*extern Datum  telephone_eq      (PG_FUNCTION_ARGS);
@@ -217,34 +325,180 @@ extern Datum  telephone_gt      (PG_FUNCTION_ARGS);
 extern Datum  telephone_ge      (PG_FUNCTION_ARGS);
 extern Datum  telephone_lt      (PG_FUNCTION_ARGS);
 extern Datum  telephone_le      (PG_FUNCTION_ARGS);
-extern Datum  citext_cmp     (PG_FUNCTION_ARGS);
-extern Datum  citext_hash    (PG_FUNCTION_ARGS);
-extern Datum  citext_smaller (PG_FUNCTION_ARGS);
-extern Datum  citext_larger  (PG_FUNCTION_ARGS);*/
+extern Datum  telephone_cmp     (PG_FUNCTION_ARGS);
+extern Datum  telephone_hash    (PG_FUNCTION_ARGS);
+extern Datum  telephone_smaller (PG_FUNCTION_ARGS);
+extern Datum  telephone_larger  (PG_FUNCTION_ARGS);*/
 
-void set_parse_out(struct digit_letter digit_letter, struct parse_buffer * parse_out, int field);
-void use_alt_state_uk(struct parse_buffer * parse_out);
-void use_alt_state_japan(struct parse_buffer * parse_out);
-struct digit_letter digit_letter_special(void);
-void field_value_add(struct parse_buffer * parse_out);
-void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_out);
-char digit_value_to_text(char digit_value, char letter_index);
-int mode_get(bytea *vlena);
-int calling_code_get(struct parse_buffer * parse_in);
-uint additional_space_count(struct parse_buffer * parse_in);
-void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int format_type, int field_index, int calling_code,
-    int area_code, int prefix, int subscriber, int extension, int letters, int pause_confirm);
-struct digit_letter digit_from_char(char digit_char);
-int service_query_russia(struct parse_buffer * parse_in);
-int service_get(struct parse_buffer * parse_in);
-char * telephone_bytea_to_char(bytea *vlena);
-bytea * telephone_char_to_bytea(char *phone_text);
-void set_parse_error(struct parse_buffer * parse_out, uint error_code, uint code_id);
-void report_parse_error(struct parse_buffer * parse_in, char *phone_text, int text_index);
-void report_byte_format_error(struct parse_buffer * parse_in, int byte_index);
-struct parse_buffer telephone_bytea_to_parse_buffer(bytea *vlena);
+/*
+Optimizations:
 
-void set_parse_out(struct digit_letter digit_letter, struct parse_buffer * parse_out, int field) {
+1) Sorting.  Because it occurs in a tight loop, this needs to be the first optimization.  This affects the storage format.
+
+2) Default text in and out.  Because it is used for pg_dump and restore, it needs to be fast in order to avoid slowing down
+   database maintenance operations.  This requires that the parse function be optimized.
+
+3) Complexity budget.  Distribute complexity and keep the code approachable.
+
+Technically, service_type should not be in the parse path, but the cost is negligible and it helps keep the complexity down.
+*/
+
+Oid *format_oids        = 0;
+Oid *subfield_oids      = 0;
+Oid *service_oids       = 0;
+Oid *fictitious_oids    = 0;
+Oid *mode_oids          = 0;
+
+/*
+int16   typlen_text;
+bool    typlen_text_typbyval;
+char    typlen_text_typalign = 0;*/
+
+Oid     typlen_telephone_oid = 0;
+int16   typlen_telephone;
+bool    typlen_telephone_typbyval;
+char    typlen_telephone_typalign;
+
+static void init_oids_format() {
+    if (format_oids == 0) {
+        format_oids = malloc(TFORM_FORMAT_COUNT * sizeof(Oid));
+        getEnumLabelOids("telephone_format", telephone_format_labels, format_oids, TFORM_FORMAT_COUNT);
+    }
+}
+
+static void init_oids_subfield() {
+    if (subfield_oids == 0) {
+        subfield_oids = malloc(TSF_SUBFIELD_COUNT * sizeof(Oid));
+        getEnumLabelOids("telephone_subfield", telephone_subfield_labels, subfield_oids, TSF_SUBFIELD_COUNT);
+    }
+}
+
+static void init_oids_service() {
+    if (service_oids == 0) {
+        service_oids = malloc(TSERV_SERVICE_COUNT * sizeof(Oid));
+        getEnumLabelOids("telephone_service", telephone_service_labels, service_oids, TSERV_SERVICE_COUNT);
+    }
+}
+
+static void init_oids_fictitious() {
+    if (fictitious_oids == 0) {
+        fictitious_oids = malloc(TFICT_FICTITIOUS_COUNT * sizeof(Oid));
+        getEnumLabelOids("telephone_fictitious", telephone_fictitious_labels, fictitious_oids, TFICT_FICTITIOUS_COUNT);
+    }
+}
+
+static void init_oids_mode() {
+    if (mode_oids == 0) {
+        mode_oids = malloc(TMODE_MODE_COUNT * sizeof(Oid));
+        getEnumLabelOids("telephone_mode", telephone_mode_labels, mode_oids, TMODE_MODE_COUNT);
+    }
+}
+
+/*
+static void init_typlen_text() {
+    if (typlen_text_typalign != 0)
+        return;
+
+    get_typlenbyvalalign(TEXTOID, &typlen_text, &typlen_text_typbyval, &typlen_text_typalign);
+}*/
+
+static void init_typlen_telephone() {
+    if (typlen_telephone_oid != 0)
+        return;
+
+    typlen_telephone_oid = TypenameGetTypid("telephone");
+    get_typlenbyvalalign(typlen_telephone_oid, &typlen_telephone, &typlen_telephone_typbyval, &typlen_telephone_typalign);
+}
+
+static int enum_label_cmp(const void *left, const void *right) {
+    const char *l = ((EnumLabel *) left)->label;
+    const char *r = ((EnumLabel *) right)->label;
+    return strcmp(l, r);
+}
+
+/*-------------------------------------------------------------------------
+ * enum code
+ * Copyright (c) 2010, PostgreSQL Global Development Group
+ * Written by Joey Adams <joeyadams3.14159@gmail.com>.
+ *-------------------------------------------------------------------------
+ * getEnumLabelOids
+ *    Look up the OIDs of enum labels.  Enum label OIDs are needed to
+ *    return values of a custom enum type from a C function.
+ *
+ *    Callers should typically cache the OIDs produced by this function
+ *    using fn_extra, as retrieving enum label OIDs is somewhat expensive.
+ *
+ *    Every labels[i].index must be between 0 and count, and oid_out
+ *    must be allocated to hold count items.  Note that getEnumLabelOids
+ *    sorts the labels[] array passed to it.
+ *
+ *    Any labels not found in the enum will have their corresponding
+ *    oid_out entries set to InvalidOid.
+ *
+ *    Sample usage:
+ *
+ *    -- SQL --
+ *    CREATE TYPE colors AS ENUM ('red', 'green', 'blue');
+ *
+ *    -- C --
+ *    enum Colors {RED, GREEN, BLUE, COLOR_COUNT};
+ *
+ *    static EnumLabel enum_labels[COLOR_COUNT] =
+ *    {
+ *        {RED,   "red"},
+ *        {GREEN, "green"},
+ *        {BLUE,  "blue"}
+ *    };
+ *
+ *    Oid *label_oids = palloc(COLOR_COUNT * sizeof(Oid));
+ *    getEnumLabelOids("colors", enum_labels, label_oids, COLOR_COUNT);
+ *
+ *    PG_RETURN_OID(label_oids[GREEN]);
+ */
+void
+getEnumLabelOids(const char *typname, EnumLabel labels[], Oid oid_out[], int count)
+{
+    CatCList   *list;
+    Oid         enumtypoid;
+    int         total;
+    int         i;
+    EnumLabel   key;
+    EnumLabel  *found;
+
+    enumtypoid = TypenameGetTypid(typname);
+    Assert(OidIsValid(enumtypoid));
+
+    qsort(labels, count, sizeof(EnumLabel), enum_label_cmp);
+
+    for (i = 0; i < count; i++)
+    {
+        /* Initialize oid_out items to InvalidOid. */
+        oid_out[i] = InvalidOid;
+
+        /* Make sure EnumLabel indices are in range. */
+        Assert(labels[i].index >= 0 && labels[i].index < count);
+    }
+
+    list = SearchSysCacheList1(ENUMTYPOIDNAME,
+                               ObjectIdGetDatum(enumtypoid));
+    total = list->n_members;
+
+    for (i = 0; i < total; i++)
+    {
+        HeapTuple   tup = &list->members[i]->tuple;
+        Oid         oid = HeapTupleGetOid(tup);
+        Form_pg_enum en = (Form_pg_enum) GETSTRUCT(tup);
+
+        key.label = NameStr(en->enumlabel);
+        found = bsearch(&key, labels, count, sizeof(EnumLabel), enum_label_cmp);
+        if (found != NULL)
+            oid_out[found->index] = oid;
+    }
+
+    ReleaseCatCacheList(list);
+}
+
+static void set_parse_out(struct digit_letter digit_letter, struct parse_buffer * parse_out, int field) {
     int field_changed = 0;
     int pause_count;
     if (parse_out->digit_pos_next != 0) {
@@ -333,7 +587,7 @@ void set_parse_out(struct digit_letter digit_letter, struct parse_buffer * parse
     parse_out->field_pos++;
 }
 
-struct digit_letter digit_letter_special() {
+static struct digit_letter digit_letter_special() {
     struct digit_letter digit_letter;
 
     digit_letter.value = DIGIT_SPECIAL;
@@ -343,18 +597,23 @@ struct digit_letter digit_letter_special() {
     return digit_letter;
 }
 
-void field_value_add(struct parse_buffer * parse_out) {
+static void field_value_add(struct parse_buffer * parse_out) {
     parse_out->field_value *= 10; // Move the significant decimal (not binary) digit to the left.
     parse_out->field_value += parse_out->digit_values[parse_out->digit_pos_next - 1];
 }
 
-void set_parse_error(struct parse_buffer * parse_out, uint error_code, uint code_id) {
+// Find last used code_id with:
+// grep 'set_parse_error(parse_out, ERROR_' src/telephone.c | cut -d ',' -f 3 | cut -d ')' -f 1 | sed 's/ //' | sort -n | tail -n 1
+// Use -1 if you have not assigned one yet.  Make sure to replace copied numbers with -1 after a copy and paste.
+// Reassign duplicate IDs if any show up with this:
+// grep 'set_parse_error(parse_out, ERROR_' src/telephone.c | cut -d ',' -f 3 | cut -d ')' -f 1 | sed 's/ //' | sort -n | uniq -d
+static void set_parse_error(struct parse_buffer * parse_out, uint error_code, uint code_id) {
     parse_out->parse_state  = STATE_ERROR;
     parse_out->error_code   = error_code;
     parse_out->code_id      = code_id;
 }
 
-void use_alt_state_uk(struct parse_buffer * parse_out) {
+static void use_alt_state_uk(struct parse_buffer * parse_out) {
     switch (parse_out->alt_state) {
         case ALT_STATE_NULL:
             set_parse_error(parse_out, ERROR_AREA_CODE_NOT_FOUND, 79);
@@ -362,7 +621,7 @@ void use_alt_state_uk(struct parse_buffer * parse_out) {
         case ALT_STATE_UK_4:
             parse_out->parse_state      = STATE_UK_SUB_1_6;
             parse_out->field_pos        = parse_out->digit_pos_next - 6;
-            parse_out->service_type     = SERVICE_LAND;
+            parse_out->service_type     = TSERV_LAND;
             parse_out->digit_fields[6]  = FIELD_UK_SUB1;
         break;
         default:
@@ -371,10 +630,10 @@ void use_alt_state_uk(struct parse_buffer * parse_out) {
     }
 }
 
-void use_alt_state_japan(struct parse_buffer * parse_out) {
+static void use_alt_state_japan(struct parse_buffer * parse_out) {
     switch (parse_out->alt_state) {
         case ALT_STATE_NULL:
-            set_parse_error(parse_out, ERROR_AREA_CODE_NOT_FOUND, 79);
+            set_parse_error(parse_out, ERROR_AREA_CODE_NOT_FOUND, 117);
         break;
         case ALT_STATE_JAPAN_LAND_2:
             if (parse_out->digit_pos_next == 7) {
@@ -384,7 +643,7 @@ void use_alt_state_japan(struct parse_buffer * parse_out) {
                 parse_out->parse_state  = STATE_JAPAN_SUB_1_3_4;
                 parse_out->field_pos    = parse_out->digit_pos_next - 4;
             }
-            parse_out->service_type     = SERVICE_LAND;
+            parse_out->service_type     = TSERV_LAND;
             parse_out->digit_fields[4]  = FIELD_JAPAN_SUB1;
             parse_out->digit_fields[5]  = FIELD_JAPAN_SUB1;
             parse_out->digit_fields[6]  = FIELD_JAPAN_SUB1;
@@ -397,7 +656,7 @@ void use_alt_state_japan(struct parse_buffer * parse_out) {
                 parse_out->parse_state  = STATE_JAPAN_SUB_1_2_4;
                 parse_out->field_pos    = parse_out->digit_pos_next - 5;
             }
-            parse_out->service_type     = SERVICE_LAND;
+            parse_out->service_type     = TSERV_LAND;
             parse_out->digit_fields[5]  = FIELD_JAPAN_SUB1;
             parse_out->digit_fields[6]  = FIELD_JAPAN_SUB1;
         break;
@@ -409,7 +668,7 @@ void use_alt_state_japan(struct parse_buffer * parse_out) {
                 parse_out->parse_state  = STATE_JAPAN_SUB_1_1_4;
                 parse_out->field_pos    = parse_out->digit_pos_next - 6;
             }
-            parse_out->service_type     = SERVICE_LAND;
+            parse_out->service_type     = TSERV_LAND;
             parse_out->digit_fields[6]  = FIELD_JAPAN_SUB1;
         break;
         default:
@@ -418,7 +677,7 @@ void use_alt_state_japan(struct parse_buffer * parse_out) {
     }
 }
 
-void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_out) {
+static void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_out) {
     char digit_value = digit_letter.value;
     int parse_state = parse_out->parse_state;
     parse_out->parse_state = STATE_ERROR;
@@ -951,12 +1210,13 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                             case 985: // LA
                             case 989: // MI
                                 parse_out->parse_state = STATE_NANP_COC_START;
-                                parse_out->service_type = SERVICE_OTHER_GEO;
+                                parse_out->service_type = TSERV_LAND_OR_CELL;
                             break;
                             case 227: // MD
                             case 274: // WI
                             case 283: // OH
                             case 327: // AR
+                            case 332: // NY
                             case 380: // OH
                             case 447: // IL
                             case 463: // IN
@@ -973,23 +1233,36 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                             case 825: // ALBERTA
                             case 934: // NY
                             case 975: // MO
+                            case 986: // ID
                                 // Planned, but not yet in service
                                 parse_out->parse_state = STATE_NANP_COC_START;
-                                parse_out->service_type = SERVICE_OTHER_GEO;
+                                parse_out->service_type = TSERV_LAND_OR_CELL;
                             break;
                             case 456: // Inbound International
+                                parse_out->parse_state = STATE_NANP_COC_START;
+                                parse_out->service_type = TSERV_CARRIER_SERVICES_INTERNATIONAL;
+                            break;
+                            case 600: // Canadian Services
+                            case 622: // Canadian Non-Geographic Services
+                                parse_out->parse_state = STATE_NANP_COC_START;
+                                parse_out->service_type = TSERV_OTHER;
+                            break;
+                            case 700: // Interexchange Carrier Services
+                                parse_out->parse_state = STATE_NANP_COC_START;
+                                parse_out->service_type = TSERV_CARRIER_SERVICES_INTRA;
+                            break;
+                            case 710: // US Government
+                                parse_out->parse_state = STATE_NANP_COC_START;
+                                parse_out->service_type = TSERV_GOVERNMENT;
+                            break;
                             case 500: // Non-Geographic Services
                             case 533: // Non-Geographic Services
                             case 544: // Non-Geographic Services
                             case 566: // Non-Geographic Services
                             case 577: // Non-Geographic Services
                             case 588: // Personal Communication Service
-                            case 600: // Canadian Services
-                            case 622: // Canadian Non-Geographic Services
-                            case 700: // Interexchange Carrier Services
-                            case 710: // US Government
                                 parse_out->parse_state = STATE_NANP_COC_START;
-                                parse_out->service_type = SERVICE_OTHER;
+                                parse_out->service_type = TSERV_FOLLOW_ME;
                             break;
                             case 800: // Toll-Free
                             case 844: // Toll-Free
@@ -998,17 +1271,17 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                             case 877: // Toll-Free
                             case 888: // Toll-Free
                                 parse_out->parse_state = STATE_NANP_COC_START;
-                                parse_out->service_type = SERVICE_TOLLFREE;
+                                parse_out->service_type = TSERV_TOLLFREE;
                             break;
                             case 900: // Premium Services
                                 parse_out->parse_state = STATE_NANP_COC_START;
-                                parse_out->service_type = SERVICE_CHARGE;
+                                parse_out->service_type = TSERV_CHARGE;
                             break;
                             default:
                                 set_parse_error(parse_out, ERROR_AREA_CODE_NOT_FOUND, 4);
                             break;
                         }
-                        //parse_out->service_type = SERVICE_QUERY_NANP;
+                        //parse_out->service_type = TSERV_QUERY_NANP;
                     }
                 break;
                 default:
@@ -1100,6 +1373,19 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                     if (parse_out->field_pos < 4) {
                         parse_out->parse_state = STATE_NANP_SUB_DIGITS;
                     } else {
+                        if (
+                            parse_out->digit_values[ 1] == 8 &&
+                            parse_out->digit_values[ 2] == 0 &&
+                            parse_out->digit_values[ 3] == 5 &&
+                            parse_out->digit_values[ 4] == 6 &&
+                            parse_out->digit_values[ 5] == 3 &&
+                            parse_out->digit_values[ 6] == 7 &&
+                            parse_out->digit_values[ 7] == 7 &&
+                            parse_out->digit_values[ 8] == 2 &&
+                            parse_out->digit_values[ 9] == 4 &&
+                            parse_out->digit_values[10] == 3) {
+                            parse_out->service_type = TSERV_VOICEMAIL;
+                        }
                         parse_out->parse_state = STATE_EXTENSION_START;
                         parse_out->field_pos = 0;
                     }
@@ -1212,13 +1498,19 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
         break;
         case STATE_CALLING_CODE_ZONE3: // Europe
             switch (digit_value) {
+                case 3: // France
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_FRANCE_START;
+                break;
+                case 9: // Italy
+                    set_parse_out(digit_letter, parse_out, FIELD_CALLING_CODE);
+                    parse_out->parse_state = STATE_ITALY_AREA_START;
+                break;
                 case 0: // Greece
                 case 1: // Netherlands
                 case 2: // Belgium
-                case 3: // France
                 case 4: // Spain
                 case 6: // Hungary
-                case 9: // Italy
                     set_parse_error(parse_out, ERROR_CALLING_CODE_NEED_CODE, 15);
                 break;
                 case 5:
@@ -1231,6 +1523,86 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                 break;
                 default:
                     set_parse_error(parse_out, ERROR_CALLING_CODE_DIGITS_INVALID, 17);
+                break;
+            }
+        break;
+        case STATE_FRANCE_START:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    parse_out->parse_state = STATE_FRANCE_START;
+                break;
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                    set_parse_out(digit_letter, parse_out, FIELD_FRANCE_AREA_CODE);
+                    parse_out->parse_state  = STATE_FRANCE_DIGITS;
+                    parse_out->service_type = TSERV_LAND;
+                    parse_out->field_pos    = 0;
+                break;
+                case 6:
+                case 7:
+                    set_parse_out(digit_letter, parse_out, FIELD_FRANCE_AREA_CODE);
+                    parse_out->parse_state  = STATE_FRANCE_DIGITS;
+                    parse_out->service_type = TSERV_CELL;
+                    parse_out->field_pos    = 0;
+                break;
+                case 8:
+                    set_parse_out(digit_letter, parse_out, FIELD_FRANCE_AREA_CODE);
+                    parse_out->parse_state  = STATE_FRANCE_DIGITS;
+                    parse_out->field_value  = digit_value;
+                    parse_out->field_pos    = 0;
+                break;
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_FRANCE_AREA_CODE);
+                    parse_out->parse_state  = STATE_FRANCE_DIGITS;
+                    parse_out->service_type = TSERV_VOIP;
+                    parse_out->field_pos    = 0;
+                break;
+                default:
+                    set_parse_error(parse_out, ERROR_AREA_CODE_START_INVALID, 118);
+                break;
+            }
+        break;
+        case STATE_FRANCE_DIGITS:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos % 2 == 0)
+                        parse_out->parse_state = STATE_FRANCE_DIGITS;
+                    else
+                        set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, 119);
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    if (parse_out->service_type == TSERV_NEED_TO_PARSE) {
+                        if (parse_out->field_value == 8) {
+                            if (digit_value == 0)
+                                parse_out->service_type = TSERV_TOLLFREE;
+                            else
+                                parse_out->service_type = TSERV_CHARGE;
+                        } else {
+                            set_parse_error(parse_out, ERROR_INVALID_STATE, 120);
+                        }
+                    }
+                    set_parse_out(digit_letter, parse_out, FIELD_FRANCE_SUB);
+                    if (parse_out->field_pos < 8) {
+                        parse_out->parse_state = STATE_FRANCE_DIGITS;
+                    } else {
+                        parse_out->parse_state  = STATE_EXTENSION_START;
+                        parse_out->field_pos    = 0;
+                    }
+                break;
+                default:
+                    set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, 121);
                 break;
             }
         break;
@@ -1306,12 +1678,12 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                         case 50:
                             parse_out->parse_state      = STATE_FINLAND_SUB_1_3_2_2;
                             parse_out->field_pos        = 0;
-                            parse_out->service_type     = SERVICE_CELL;
+                            parse_out->service_type     = TSERV_CELL;
                         break;
                         case 800:
                             parse_out->parse_state      = STATE_FINLAND_SUB_1_3_3;
                             parse_out->field_pos        = 0;
-                            parse_out->service_type     = SERVICE_TOLLFREE;
+                            parse_out->service_type     = TSERV_TOLLFREE;
                         break;
                         default:
                             if (parse_out->field_pos == 3)
@@ -1404,13 +1776,6 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                 case 7:
                 case 8:
                 case 9:
-                    set_parse_out(digit_letter, parse_out, FIELD_FINLAND_SUB3);
-                    if (parse_out->field_pos < 2) {
-                        parse_out->parse_state = STATE_FINLAND_SUB_3_2;
-                    } else {
-                        parse_out->parse_state  = STATE_EXTENSION_START;
-                        parse_out->field_pos    = 0;
-                    }
                 break;
                 default:
                     set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, 28);
@@ -1479,6 +1844,596 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                 break;
             }
         break;
+        case STATE_ITALY_AREA_START:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    parse_out->parse_state = STATE_ITALY_AREA_START;
+                break;
+                case 0:
+                case 8:
+                    set_parse_out(digit_letter, parse_out, FIELD_ITALY_AREA_CODE);
+                    parse_out->parse_state = STATE_ITALY_AREA_DIGIT2;
+                    parse_out->field_value = digit_value;
+                break;
+                case 3:
+                    set_parse_out(digit_letter, parse_out, FIELD_ITALY_AREA_CODE);
+                    parse_out->parse_state  = STATE_ITALY_CELL_PREFIX;
+                    parse_out->field_pos    = 1;
+                break;
+                default:
+                    set_parse_error(parse_out, ERROR_AREA_CODE_START_INVALID, 122);
+                break;
+            }
+        break;
+        case STATE_ITALY_AREA_DIGIT2:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_ITALY_AREA_CODE);
+                    field_value_add(parse_out);
+                    switch (parse_out->field_value) {
+                        case 2: // Milano
+                        case 6: // Roma
+                            parse_out->parse_state = STATE_ITALY_SUB_1_8;
+                            parse_out->field_pos = 0;
+                            parse_out->service_type = TSERV_LAND;
+                        break;
+                        default:
+                            parse_out->parse_state = STATE_ITALY_AREA_DIGIT3;
+                        break;
+                    }
+                break;
+                default:
+                    set_parse_error(parse_out, ERROR_AREA_CODE_DIGITS_INVALID, 123);
+                break;
+            }
+        break;
+        case STATE_ITALY_AREA_DIGIT3:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_ITALY_AREA_CODE);
+                    field_value_add(parse_out);
+                    switch (parse_out->field_value) {
+                        case 10: // Genova
+                        case 11: // Torino
+                        case 15: // Biella
+                        case 19: // Savona
+                        case 30: // Brescia
+                        case 31: // Como
+                        case 35: // Bergamo
+                        case 39: // Monza
+                        case 40: // Trieste
+                        case 41: // Venezia (Mestre)
+                        case 45: // Verona
+                        case 49: // Padova
+                        case 50: // Pisa
+                        case 51: // Bologna
+                        case 55: // Firenze
+                        case 59: // Modena
+                        case 70: // Cagliari
+                        case 71: // Ancona
+                        case 75: // Perugia
+                        case 79: // Sassari
+                        case 80: // Bari
+                        case 81: // Napoli
+                        case 85: // Pescara
+                        case 89: // Salerno
+                        case 90: // Messina
+                        case 91: // Palermo
+                        case 95: // Catania
+                        case 99: // Taranto
+                            parse_out->parse_state = STATE_ITALY_SUB_1_7;
+                            parse_out->field_pos = 0;
+                            parse_out->service_type = TSERV_LAND;
+                        break;
+                        case 800:
+                        case 803:
+                            parse_out->parse_state = STATE_ITALY_SUB_2_3_3;
+                            parse_out->field_pos = 0;
+                            parse_out->service_type = TSERV_TOLLFREE;
+                        break;
+                        default:
+                            parse_out->parse_state = STATE_ITALY_AREA_DIGIT4;
+                        break;
+                    }
+                break;
+                default:
+                    set_parse_error(parse_out, ERROR_AREA_CODE_DIGITS_INVALID, 124);
+                break;
+            }
+        break;
+        case STATE_ITALY_AREA_DIGIT4:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_ITALY_AREA_CODE);
+                    field_value_add(parse_out);
+                    switch (parse_out->field_value) {
+                        case 121: // Pinerolo
+                        case 122: // Susa
+                        case 123: // Lanzo Torinese
+                        case 124: // Rivarolo Canavese
+                        case 125: // Ivrea
+                        case 131: // Alessandria
+                        case 141: // Asti
+                        case 142: // Casale Monferrato
+                        case 143: // Novi Ligure
+                        case 144: // Acqui Terme
+                        case 161: // Vercelli
+                        case 163: // Borgosesia
+                        case 165: // Aosta
+                        case 166: // St. Vincent
+                        case 171: // Cuneo
+                        case 172: // Savigliano
+                        case 173: // Alba
+                        case 174: // Mondovi'
+                        case 175: // Saluzzo
+                        case 182: // Albenga
+                        case 183: // Imperia
+                        case 184: // San remo
+                        case 185: // Rapallo
+                        case 187: // La Spezia
+                        case 321: // Novara
+                        case 322: // Arona
+                        case 323: // Baveno
+                        case 324: // Domodossola
+                        case 331: // Busto Arsizio
+                        case 332: // Varese
+                        case 341: // Lecco
+                        case 342: // Sondrio
+                        case 343: // Chiavenna
+                        case 344: // Menaggio
+                        case 345: // S. Pellegrino Terme
+                        case 346: // Clusone
+                        case 362: // Seregno
+                        case 363: // Treviglio
+                        case 364: // Breno
+                        case 365: // Salò
+                        case 369: // Milano for mass call, until 31st December 2014
+                        case 371: // Lodi
+                        case 372: // Cremona
+                        case 373: // Crema
+                        case 374: // Soresina
+                        case 375: // Casalmaggiore
+                        case 376: // Mantova
+                        case 377: // Codogno
+                        case 381: // Vigevano
+                        case 382: // Pavia
+                        case 383: // Voghera
+                        case 384: // Mortara
+                        case 385: // Stradella
+                        case 386: // Ostiglia
+                        case 421: // S. Dona' di Piave
+                        case 422: // Treviso
+                        case 423: // Montebelluna
+                        case 424: // Bassano del Grappa
+                        case 425: // Rovigo
+                        case 426: // Adria
+                        case 427: // Spilimbergo
+                        case 428: // Tarvisio
+                        case 429: // Este
+                        case 431: // Cervignano del Friuli
+                        case 432: // Udine
+                        case 433: // Tolmezzo
+                        case 434: // Pordenone
+                        case 435: // Pieve di Cadore
+                        case 436: // Cortina d'Ampezzo
+                        case 437: // Belluno
+                        case 438: // Conegliano
+                        case 439: // Feltre
+                        case 442: // Legnago
+                        case 444: // Vicenza
+                        case 445: // Schio
+                        case 461: // Trento
+                        case 462: // Cavalese
+                        case 463: // Cles
+                        case 464: // Rovereto
+                        case 465: // Tione di Trento
+                        case 471: // Bolzano
+                        case 472: // Bressanone
+                        case 473: // Merano
+                        case 474: // Brunico
+                        case 481: // Gorizia
+                        case 521: // Parma
+                        case 522: // Reggio nell'Emilia
+                        case 523: // Piacenza
+                        case 524: // Fidenza
+                        case 525: // Fornovo di Taro
+                        case 532: // Ferrara
+                        case 533: // Comacchio
+                        case 534: // Porretta Terme
+                        case 535: // Mirandola
+                        case 536: // Sassuolo
+                        case 541: // Rimini
+                        case 542: // Imola
+                        case 543: // Forlì
+                        case 544: // Ravenna
+                        case 545: // Lugo
+                        case 546: // Faenza
+                        case 547: // Cesena
+                        case 549: // S. Marino (Rep. di)
+                        case 564: // Grosseto
+                        case 565: // Piombino
+                        case 566: // Follonica
+                        case 571: // Empoli
+                        case 572: // Montecatini Terme
+                        case 573: // Pistoia
+                        case 574: // Prato
+                        case 575: // Arezzo
+                        case 577: // Siena
+                        case 578: // Chianciano Terme
+                        case 583: // Lucca
+                        case 584: // Viareggio
+                        case 585: // Massa
+                        case 586: // Livorno
+                        case 587: // Pontedera
+                        case 588: // Volterra
+                        case 721: // Pesaro
+                        case 722: // Urbino
+                        case 731: // Jesi
+                        case 732: // Fabriano
+                        case 733: // Macerata
+                        case 734: // Fermo
+                        case 735: // S. Benedetto del Tronto
+                        case 736: // Ascoli Piceno
+                        case 737: // Camerino
+                        case 742: // Foligno
+                        case 743: // Spoleto
+                        case 744: // Terni
+                        case 746: // Rieti
+                        case 761: // Viterbo
+                        case 763: // Orvieto
+                        case 765: // Poggio Mirteto
+                        case 766: // Civitavecchia
+                        case 769: // Roma for mass call, until 31st December 2014
+                        case 771: // Formia
+                        case 773: // Latina
+                        case 774: // Tivoli
+                        case 775: // Frosinone
+                        case 776: // Cassino
+                        case 781: // Iglesias
+                        case 782: // Lanusei
+                        case 783: // Oristano
+                        case 784: // Nuoro
+                        case 785: // Macomer
+                        case 789: // Olbia
+                        case 823: // Caserta
+                        case 824: // Benevento
+                        case 825: // Avellino
+                        case 827: // S. Angelo dei Lombardi
+                        case 828: // Battipaglia
+                        case 831: // Brindisi
+                        case 832: // Lecce
+                        case 833: // Gallipoli
+                        case 835: // Matera
+                        case 836: // Maglie
+                        case 861: // Teramo
+                        case 862: // L'Aquila
+                        case 863: // Avezzano
+                        case 864: // Sulmona
+                        case 865: // Isernia
+                        case 871: // Chieti
+                        case 872: // Lanciano
+                        case 873: // Vasto
+                        case 874: // Campobasso
+                        case 875: // Termoli
+                        case 881: // Foggia
+                        case 882: // S. Severo
+                        case 883: // Andria
+                        case 884: // Manfredonia
+                        case 885: // Cerignola
+                        case 921: // Cefalù
+                        case 922: // Agrigento
+                        case 923: // Trapani
+                        case 924: // Alcamo
+                        case 925: // Sciacca
+                        case 931: // Siracusa
+                        case 932: // Ragusa
+                        case 933: // Caltagirone
+                        case 934: // Caltanissetta
+                        case 935: // Enna
+                        case 941: // Patti
+                        case 942: // Taormina
+                        case 961: // Catanzaro
+                        case 962: // Crotone
+                        case 963: // Vibo Valentia
+                        case 964: // Locri
+                        case 965: // Reggio Calabria
+                        case 966: // Palmi
+                        case 967: // Soverato
+                        case 968: // Lamezia Terme
+                        case 971: // Potenza
+                        case 972: // Melfi
+                        case 973: // Lagonegro
+                        case 974: // Vallo della Lucania
+                        case 975: // Sala Consilina
+                        case 976: // Muro Lucano
+                        case 981: // Castrovillari
+                        case 982: // Paola
+                        case 983: // Rossano
+                        case 984: // Cosenza
+                        case 985: // Scalea
+                            parse_out->parse_state = STATE_ITALY_SUB_1_6;
+                            parse_out->field_pos = 0;
+                            parse_out->service_type = TSERV_LAND;
+                            break;
+                        default:
+                            set_parse_error(parse_out, ERROR_AREA_CODE_NOT_FOUND, 125);
+                        break;
+                    }
+                break;
+                default:
+                    set_parse_error(parse_out, ERROR_AREA_CODE_DIGITS_INVALID, 126);
+                break;
+            }
+        break;
+        case STATE_ITALY_SUB_1_8:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0)
+                        parse_out->parse_state = STATE_ITALY_SUB_1_8;
+                    else
+                        set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, 127);
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_ITALY_SUB1);
+                    if (parse_out->field_pos < 8) {
+                        parse_out->parse_state  = STATE_ITALY_SUB_1_8;
+                    } else {
+                        parse_out->parse_state  = STATE_EXTENSION_START;
+                        parse_out->field_pos    = 0;
+                    }
+                break;
+                default:
+                    set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, 128);
+                break;
+            }
+        break;
+        case STATE_ITALY_SUB_1_7:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0)
+                        parse_out->parse_state = STATE_ITALY_SUB_1_7;
+                    else
+                        set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, 129);
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_ITALY_SUB1);
+                    if (parse_out->field_pos < 7) {
+                        parse_out->parse_state  = STATE_ITALY_SUB_1_7;
+                    } else {
+                        parse_out->parse_state  = STATE_EXTENSION_START;
+                        parse_out->field_pos    = 0;
+                    }
+                break;
+                default:
+                    set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, 130);
+                break;
+            }
+        break;
+        case STATE_ITALY_SUB_1_6:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0)
+                        parse_out->parse_state = STATE_ITALY_SUB_1_6;
+                    else
+                        set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, 131);
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_ITALY_SUB1);
+                    if (parse_out->field_pos < 6) {
+                        parse_out->parse_state  = STATE_ITALY_SUB_1_6;
+                    } else {
+                        parse_out->parse_state  = STATE_EXTENSION_START;
+                        parse_out->field_pos    = 0;
+                    }
+                break;
+                default:
+                    set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, 132);
+                break;
+            }
+        break;
+        case STATE_ITALY_CELL_PREFIX:
+            switch (digit_value) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_ITALY_AREA_CODE);
+                    if (parse_out->field_pos < 3) {
+                        parse_out->parse_state  = STATE_ITALY_CELL_PREFIX;
+                    } else {
+                        parse_out->parse_state  = STATE_ITALY_EX;
+                        parse_out->field_pos    = 0;
+                    }
+                break;
+                default:
+                    set_parse_error(parse_out, ERROR_AREA_CODE_DIGITS_INVALID, 133);
+                break;
+            }
+        break;
+        case STATE_ITALY_EX:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0)
+                        parse_out->parse_state = STATE_ITALY_EX;
+                    else
+                        set_parse_error(parse_out, ERROR_EXCHANGE_CODE_DIGITS_INVALID, 134);
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_ITALY_EX_CODE);
+                    if (parse_out->field_pos < 3) {
+                        parse_out->parse_state  = STATE_ITALY_EX;
+                    } else {
+                        parse_out->parse_state  = STATE_ITALY_SUB_1_4;
+                        parse_out->field_pos    = 0;
+                    }
+                break;
+                default:
+                    set_parse_error(parse_out, ERROR_EXCHANGE_CODE_DIGITS_INVALID, 135);
+                break;
+            }
+        break;
+        case STATE_ITALY_SUB_1_4:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0)
+                        parse_out->parse_state = STATE_ITALY_SUB_1_4;
+                    else
+                        set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, 136);
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_ITALY_SUB1);
+                    if (parse_out->field_pos < 4) {
+                        parse_out->parse_state  = STATE_ITALY_SUB_1_4;
+                    } else {
+                        parse_out->parse_state  = STATE_EXTENSION_START;
+                        parse_out->field_pos    = 0;
+                    }
+                break;
+                default:
+                    set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, 137);
+                break;
+            }
+        break;
+        case STATE_ITALY_SUB_2_3_3:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0)
+                        parse_out->parse_state = STATE_ITALY_SUB_2_3_3;
+                    else
+                        set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, -1);
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_ITALY_SUB1);
+                    if (parse_out->field_pos < 3) {
+                        parse_out->parse_state  = STATE_ITALY_SUB_2_3_3;
+                    } else {
+                        parse_out->parse_state  = STATE_ITALY_SUB_2_3;
+                        parse_out->field_pos    = 0;
+                    }
+                break;
+                default:
+                    set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, -1);
+                break;
+            }
+        break;
+        case STATE_ITALY_SUB_2_3:
+            switch (digit_value) {
+                case DIGIT_SPECIAL:
+                    if (parse_out->field_pos == 0)
+                        parse_out->parse_state = STATE_ITALY_SUB_2_3;
+                    else
+                        set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, -1);
+                break;
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                case 8:
+                case 9:
+                    set_parse_out(digit_letter, parse_out, FIELD_ITALY_SUB2);
+                    if (parse_out->field_pos < 3) {
+                        parse_out->parse_state  = STATE_ITALY_SUB_2_3;
+                    } else {
+                        parse_out->parse_state  = STATE_EXTENSION_START;
+                        parse_out->field_pos    = 0;
+                    }
+                break;
+                default:
+                    set_parse_error(parse_out, ERROR_SUBSCRIBER_NUM_DIGITS_INVALID, -1);
+                break;
+            }
+        break;
         case STATE_CALLING_CODE_ZONE4: // Europe
             switch (digit_value) {
                 case 4: // United Kingdom
@@ -1508,6 +2463,7 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                 break;
                 case 1:
                 case 2:
+                    parse_out->service_type = TSERV_LAND;
                 case 3:
                 case 4:
                 case 5:
@@ -1518,6 +2474,8 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                     set_parse_out(digit_letter, parse_out, FIELD_UK_AREA_CODE);
                     parse_out->parse_state = STATE_UK_AREA_DIGIT2;
                     parse_out->field_value = digit_value;
+                    if (digit_value == 9)
+                        parse_out->service_type = TSERV_CHARGE;
                 break;
                 default:
                     set_parse_error(parse_out, ERROR_AREA_CODE_START_INVALID, 35);
@@ -1546,7 +2504,7 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                         case 29:
                             // 2+8 only: (02x) xxxx xxxx
                             parse_out->parse_state = STATE_UK_SUB_1_4_4;
-                            parse_out->field_pos = 0;
+                            parse_out->field_pos   = 0;
                         break;
                         case 70:
                         case 71:
@@ -1612,22 +2570,35 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                         case 372:
                             // 3+7 only: (011x) xxx xxxx
                             // 3+7 only: (01x1) xxx xxxx
-                            parse_out->parse_state = STATE_UK_SUB_1_3_4;
-                            parse_out->field_pos = 0;
+                            parse_out->parse_state  = STATE_UK_SUB_1_3_4;
+                            parse_out->field_pos    = 0;
                         break;
                         case 500:
                             set_parse_error(parse_out, ERROR_NUMBER_OBSOLETE, 37);
                         break;
                         case 800:
-                            parse_out->parse_state = STATE_UK_SUB_1_6;
-                            parse_out->field_pos = 0;
-                        break;
                         case 808:
-                        case 843:
-                        case 844:
-                        case 845:
                         case 870:
+                            parse_out->service_type = TSERV_TOLLFREE;
+                            parse_out->parse_state  = STATE_UK_SUB_1_3_4;
+                            parse_out->field_pos    = 0;
+                        break;
+                        case 844:
+                            parse_out->service_type = TSERV_CALLER_COST;
+                            parse_out->parse_state  = STATE_UK_SUB_1_3_4;
+                            parse_out->field_pos    = 0;
+                        break;
+                        case 845:
+                            parse_out->service_type = TSERV_SHARED_COST;
+                            parse_out->parse_state  = STATE_UK_SUB_1_3_4;
+                            parse_out->field_pos    = 0;
+                        break;
                         case 871:
+                            parse_out->service_type = TSERV_CHARGE;
+                            parse_out->parse_state  = STATE_UK_SUB_1_3_4;
+                            parse_out->field_pos    = 0;
+                        break;
+                        case 843:
                         case 872:
                         case 900:
                         case 901:
@@ -1646,8 +2617,8 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                         case 983:
                         case 984:
                         case 989:
-                            parse_out->parse_state = STATE_UK_SUB_1_3_4;
-                            parse_out->field_pos = 0;
+                            parse_out->parse_state  = STATE_UK_SUB_1_3_4;
+                            parse_out->field_pos    = 0;
                         break;
                         break;
                         default:
@@ -1939,7 +2910,29 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                 case 8:
                 case 9:
                     set_parse_out(digit_letter, parse_out, FIELD_UK_SUB2);
-                    if (parse_out->field_pos < 4) {
+                    if (parse_out->field_pos == 1 && (
+                        (
+                            parse_out->digit_values[2] == 8 &&
+                            parse_out->digit_values[3] == 0 &&
+                            parse_out->digit_values[4] == 0 &&
+                            parse_out->digit_values[5] == 1 &&
+                            parse_out->digit_values[6] == 1 &&
+                            parse_out->digit_values[7] == 1 &&
+                            parse_out->digit_values[8] == 1
+                        ) || (
+                            parse_out->digit_values[2] == 8 && // 111 replaces this.
+                            parse_out->digit_values[3] == 4 &&
+                            parse_out->digit_values[4] == 5 &&
+                            parse_out->digit_values[5] == 4 &&
+                            parse_out->digit_values[6] == 6 &&
+                            parse_out->digit_values[7] == 4 &&
+                            parse_out->digit_values[8] == 7
+                        )
+                        )) {
+                        parse_out->digit_fields[8] = FIELD_UK_SUB1;
+                        parse_out->parse_state  = STATE_EXTENSION_START;
+                        parse_out->field_pos    = 0;
+                    } else if (parse_out->field_pos < 4) {
                         parse_out->parse_state  = STATE_UK_SUB_2_4;
                     } else {
                         parse_out->parse_state  = STATE_EXTENSION_START;
@@ -2035,13 +3028,13 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                     set_parse_out(digit_letter, parse_out, FIELD_AUSTRALIA_AREA_CODE);
                     parse_out->field_pos        = 0;
                     parse_out->parse_state      = STATE_AUSTRALIA_SUB_1_4_4;
-                    parse_out->service_type     = SERVICE_LAND;
+                    parse_out->service_type     = TSERV_LAND;
                 break;
                 case 4:
                     set_parse_out(digit_letter, parse_out, FIELD_AUSTRALIA_AREA_CODE);
                     parse_out->field_pos        = 1;
                     parse_out->parse_state      = STATE_AUSTRALIA_AREA_1_3_3_3;
-                    parse_out->service_type     = SERVICE_CELL;
+                    parse_out->service_type     = TSERV_CELL;
                 break;
                 default:
                     set_parse_error(parse_out, ERROR_AREA_CODE_DIGITS_INVALID, 59);
@@ -2218,7 +3211,7 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                 case 4:
                     set_parse_out(digit_letter, parse_out, FIELD_RUSSIA_AREA_CODE);
                     parse_out->parse_state      = STATE_RUSSIA_AREA_CODE_DIGITS;
-                    parse_out->service_type     = SERVICE_LAND;
+                    parse_out->service_type     = TSERV_LAND;
                 break;
                 default:
                     set_parse_error(parse_out, ERROR_AREA_CODE_START_INVALID, 67);
@@ -2242,7 +3235,7 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                         parse_out->parse_state = STATE_RUSSIA_AREA_CODE_DIGITS;
                     } else {
                         parse_out->parse_state = STATE_RUSSIA_ZONE_START;
-                        parse_out->service_type = SERVICE_QUERY_RUSSIA;
+                        parse_out->service_type = TSERV_QUERY_RUSSIA;
                     }
                 break;
                 default:
@@ -2370,6 +3363,7 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                     parse_out->parse_state      = STATE_JAPAN_SUB_1_4_4;
                     parse_out->field_pos        = 0;
                     parse_out->field_value      = digit_value;
+                    parse_out->service_type     = TSERV_LAND;
                 break;
                 case 1:
                 case 2:
@@ -2407,7 +3401,7 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                         case 90: // Cell phone
                             parse_out->parse_state = STATE_JAPAN_SUB_1_4_4;
                             parse_out->field_pos = 0;
-                            parse_out->service_type = SERVICE_CELL;
+                            parse_out->service_type = TSERV_CELL;
                         break;
                         case 11: // Ebetsu- Hokkaido
                         case 19: // Iwate
@@ -2480,7 +3474,7 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                         case 120: // Toll free
                             parse_out->parse_state = STATE_JAPAN_SUB_1_3_3;
                             parse_out->field_pos = 0;
-                            parse_out->service_type = SERVICE_TOLLFREE;
+                            parse_out->service_type = TSERV_TOLLFREE;
                             break;
                         case 123: // Chitose- Hokkaido
                         case 125: // Akabira- Hokkaido
@@ -3071,7 +4065,7 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                         case 93033: // Miyako District- Fukuoka
                             parse_out->parse_state = STATE_JAPAN_SUB_2_4;
                             parse_out->field_pos = 0;
-                            parse_out->service_type = SERVICE_LAND;
+                            parse_out->service_type = TSERV_LAND;
                         break;
                         default:
                             use_alt_state_japan(parse_out);
@@ -3394,7 +4388,7 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                         case 80: // Bengaluru, Karnataka
                             parse_out->parse_state = STATE_INDIA_SUB_1_4_4;
                             parse_out->field_pos = 0;
-                            parse_out->service_type = SERVICE_LAND;
+                            parse_out->service_type = TSERV_LAND;
                         break;
                         default:
                             parse_out->parse_state = STATE_INDIA_AREA_DIGIT3;
@@ -3584,7 +4578,7 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                         case 891: // Visakhapatnam, Visakhapatnam
                             parse_out->parse_state = STATE_INDIA_SUB_1_3_4;
                             parse_out->field_pos = 0;
-                            parse_out->service_type = SERVICE_LAND;
+                            parse_out->service_type = TSERV_LAND;
                         break;
                         default:
                             parse_out->parse_state = STATE_INDIA_AREA_DIGIT4;
@@ -5209,7 +6203,7 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                         case 6869: // Papadhandi, Koraput
                             parse_out->parse_state = STATE_INDIA_SUB_1_2_4;
                             parse_out->field_pos = 0;
-                            parse_out->service_type = SERVICE_LAND;
+                            parse_out->service_type = TSERV_LAND;
                             break;
                         // The 7000-9999 range (7*, 8*, and 9*) can be replaced with the AAAA-SSSSSS format without listing every
                         // allocation below.
@@ -6101,7 +7095,7 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
                         case 8966: // Srungavarapukota (Kothvls), Vizayanagaram
                             parse_out->parse_state = STATE_INDIA_SUB_1_6;
                             parse_out->field_pos = 0;
-                            parse_out->service_type = SERVICE_CELL;
+                            parse_out->service_type = TSERV_CELL;
                         break;
                         default:
                             set_parse_error(parse_out, ERROR_AREA_CODE_NOT_FOUND, 103);
@@ -6274,7 +7268,7 @@ void parse_digit(struct digit_letter digit_letter, struct parse_buffer * parse_o
     }
 }
 
-char digit_value_to_text(char digit_value, char letter_index) {
+static char digit_value_to_text(char digit_value, char letter_index) {
     switch (digit_value) {
         case 0:
         case 1:
@@ -6405,7 +7399,7 @@ char digit_value_to_text(char digit_value, char letter_index) {
     }
 }
 
-int calling_code_get(struct parse_buffer * parse_in) {
+static int calling_code_get(struct parse_buffer * parse_in) {
     int calling_code;
 
     if (parse_in->digit_fields[0] != FIELD_CALLING_CODE)
@@ -6414,47 +7408,24 @@ int calling_code_get(struct parse_buffer * parse_in) {
 
     if (parse_in->digit_fields[1] != FIELD_CALLING_CODE)
         return calling_code;
-    calling_code += parse_in->digit_values[1] * 10;
+    calling_code = calling_code * 10 + parse_in->digit_values[1];
 
     if (parse_in->digit_fields[2] != FIELD_CALLING_CODE)
         return calling_code;
-    calling_code += parse_in->digit_values[2] * 100;
+    calling_code = calling_code * 10 + parse_in->digit_values[2];
 
     if (parse_in->digit_fields[3] != FIELD_CALLING_CODE)
         return calling_code;
-    calling_code += parse_in->digit_values[3] * 1000;
+    calling_code = calling_code * 10 + parse_in->digit_values[3];
 
     if (parse_in->digit_fields[4] != FIELD_CALLING_CODE)
         return calling_code;
-    calling_code += parse_in->digit_values[4] * 10000;
-
-    if (parse_in->digit_fields[5] != FIELD_CALLING_CODE)
-        return calling_code;
-    calling_code += parse_in->digit_values[5] * 100000;
-
-    if (parse_in->digit_fields[6] != FIELD_CALLING_CODE)
-        return calling_code;
-    calling_code += parse_in->digit_values[6] * 1000000;
-
-    if (parse_in->digit_fields[7] != FIELD_CALLING_CODE)
-        return calling_code;
-    calling_code += parse_in->digit_values[7] * 10000000;
-
-    if (parse_in->digit_fields[8] != FIELD_CALLING_CODE)
-        return calling_code;
-    calling_code += parse_in->digit_values[8] * 100000000;
-
-    if (parse_in->digit_fields[9] != FIELD_CALLING_CODE)
-        return calling_code;
-    calling_code += parse_in->digit_values[9] * 1000000000;
-
-    if (parse_in->digit_fields[10] != FIELD_CALLING_CODE)
-        return calling_code;
+    calling_code = calling_code * 10 + parse_in->digit_values[4];
 
     return -1;
 }
 
-uint additional_space_count(struct parse_buffer * parse_in) {
+static uint additional_space_count(struct parse_buffer * parse_in) {
     uint additional_space_count = 0;
     int prior_field = FIELD_INVALID;
     int digit_index;
@@ -6482,7 +7453,8 @@ uint additional_space_count(struct parse_buffer * parse_in) {
     return additional_space_count;
 }
 
-void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int format_type, int field_index, int calling_code,
+static void digits_format(struct parse_buffer * parse_in, char * formatted_digits, enum TelephoneFormat format_type,
+                          int field_index, int calling_code,
     int area_code, int prefix, int subscriber, int extension, int letters, int pause_confirm) {
     int digit_index;
     int field_count = 0;
@@ -6518,7 +7490,7 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 formatted_digits[text_index++] = ',';
             }
 
-        if (format_type != FORMAT_DIGITS_ONLY)
+        if (format_type != TFORM_DIGITS_ONLY)
             add_whitespace_next = (value_mask & VALUEMASK_WHITESPACE) == VALUEMASK_WHITESPACE;
 
         if (pause_confirm) {
@@ -6534,7 +7506,7 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
         switch (digit_field) {
             case FIELD_CALLING_CODE:
                 if (calling_code) {
-                    if (field_changed && format_type != FORMAT_DIGITS_ONLY) {
+                    if (field_changed && format_type != TFORM_DIGITS_ONLY) {
                         formatted_digits[text_index++] = '+';
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6545,15 +7517,16 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 if (area_code) {
                     if (field_changed) {
                         switch (format_type) {
-                            case FORMAT_INTERNATIONAL:
+                            case TFORM_INTERNATIONAL:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
-                            case FORMAT_DOMESTIC:
+                            case TFORM_DOMESTIC:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                                 formatted_digits[text_index++] = '(';
                             break;
+                            default:break;
                         }
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6564,16 +7537,17 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 if (prefix) {
                     if (field_changed) {
                         switch (format_type) {
-                            case FORMAT_INTERNATIONAL:
+                            case TFORM_INTERNATIONAL:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
-                            case FORMAT_DOMESTIC:
+                            case TFORM_DOMESTIC:
                                 if (prior_field == FIELD_NANP_NPAC)
                                     formatted_digits[text_index++] = ')';
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
+                            default:break;
                         }
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6584,13 +7558,14 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 if (subscriber) {
                     if (field_changed) {
                         switch (format_type) {
-                            case FORMAT_INTERNATIONAL:
+                            case TFORM_INTERNATIONAL:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
-                            case FORMAT_DOMESTIC:
+                            case TFORM_DOMESTIC:
                                 formatted_digits[text_index++] = '-';
                             break;
+                            default:break;
                         }
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6599,7 +7574,7 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
             break;
             case FIELD_FINLAND_AREA_CODE:
                 if (area_code) {
-                    if (field_changed && format_type != FORMAT_DIGITS_ONLY && prior_field != FIELD_INVALID) {
+                    if (field_changed && format_type != TFORM_DIGITS_ONLY && prior_field != FIELD_INVALID) {
                         formatted_digits[text_index++] = ' ';
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6608,7 +7583,7 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
             break;
             case FIELD_FINLAND_SUB1:
                 if (subscriber) {
-                    if (field_changed && format_type != FORMAT_DIGITS_ONLY) {
+                    if (field_changed && format_type != TFORM_DIGITS_ONLY) {
                         formatted_digits[text_index++] = ' ';
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6617,7 +7592,7 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
             break;
             case FIELD_FINLAND_SUB2:
                 if (subscriber) {
-                    if (field_changed && format_type != FORMAT_DIGITS_ONLY) {
+                    if (field_changed && format_type != TFORM_DIGITS_ONLY) {
                         formatted_digits[text_index++] = ' ';
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6626,7 +7601,7 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
             break;
             case FIELD_FINLAND_SUB3:
                 if (subscriber) {
-                    if (field_changed && format_type != FORMAT_DIGITS_ONLY) {
+                    if (field_changed && format_type != TFORM_DIGITS_ONLY) {
                         formatted_digits[text_index++] = ' ';
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6637,14 +7612,15 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 if (area_code) {
                     if (field_changed) {
                         switch (format_type) {
-                            case FORMAT_INTERNATIONAL:
+                            case TFORM_INTERNATIONAL:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
-                            case FORMAT_DOMESTIC:
+                            case TFORM_DOMESTIC:
                                 formatted_digits[text_index++] = '(';
                                 formatted_digits[text_index++] = '0';
                             break;
+                            default:break;
                         }
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6655,15 +7631,16 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 if (subscriber) {
                     if (field_changed) {
                         switch (format_type) {
-                            case FORMAT_INTERNATIONAL:
+                            case TFORM_INTERNATIONAL:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
-                            case FORMAT_DOMESTIC:
+                            case TFORM_DOMESTIC:
                                 formatted_digits[text_index++] = ')';
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
+                            default:break;
                         }
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6672,7 +7649,7 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
             break;
             case FIELD_UK_SUB2:
                 if (subscriber) {
-                    if (field_changed && format_type != FORMAT_DIGITS_ONLY) {
+                    if (field_changed && format_type != TFORM_DIGITS_ONLY) {
                         formatted_digits[text_index++] = ' ';
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6683,14 +7660,15 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 if (area_code) {
                     if (field_changed) {
                         switch (format_type) {
-                            case FORMAT_INTERNATIONAL:
+                            case TFORM_INTERNATIONAL:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
-                            case FORMAT_DOMESTIC:
+                            case TFORM_DOMESTIC:
                                 formatted_digits[text_index++] = '(';
                                 formatted_digits[text_index++] = '0';
                             break;
+                            default:break;
                         }
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6701,15 +7679,16 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 if (subscriber) {
                     if (field_changed) {
                         switch (format_type) {
-                            case FORMAT_INTERNATIONAL:
+                            case TFORM_INTERNATIONAL:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
-                            case FORMAT_DOMESTIC:
+                            case TFORM_DOMESTIC:
                                 formatted_digits[text_index++] = ')';
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
+                            default:break;
                         }
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6718,7 +7697,7 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
             break;
             case FIELD_AUSTRALIA_SUB2:
                 if (subscriber) {
-                    if (field_changed && format_type != FORMAT_DIGITS_ONLY) {
+                    if (field_changed && format_type != TFORM_DIGITS_ONLY) {
                         formatted_digits[text_index++] = ' ';
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6729,14 +7708,15 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 if (area_code) {
                     if (field_changed) {
                         switch (format_type) {
-                            case FORMAT_INTERNATIONAL:
+                            case TFORM_INTERNATIONAL:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
-                            case FORMAT_DOMESTIC:
+                            case TFORM_DOMESTIC:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = '-';
                             break;
+                            default:break;
                         }
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6747,13 +7727,14 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 if (prefix) {
                     if (field_changed) {
                         switch (format_type) {
-                            case FORMAT_INTERNATIONAL:
+                            case TFORM_INTERNATIONAL:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
-                            case FORMAT_DOMESTIC:
+                            case TFORM_DOMESTIC:
                                 formatted_digits[text_index++] = '-';
                             break;
+                            default:break;
                         }
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6764,13 +7745,14 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 if (subscriber) {
                     if (field_changed) {
                         switch (format_type) {
-                            case FORMAT_INTERNATIONAL:
+                            case TFORM_INTERNATIONAL:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
-                            case FORMAT_DOMESTIC:
+                            case TFORM_DOMESTIC:
                                 formatted_digits[text_index++] = '-';
                             break;
+                            default:break;
                         }
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6781,13 +7763,14 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 if (subscriber) {
                     if (field_changed) {
                         switch (format_type) {
-                            case FORMAT_INTERNATIONAL:
+                            case TFORM_INTERNATIONAL:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
-                            case FORMAT_DOMESTIC:
+                            case TFORM_DOMESTIC:
                                 formatted_digits[text_index++] = '-';
                             break;
+                            default:break;
                         }
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6798,15 +7781,16 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 if (area_code) {
                     if (field_changed) {
                         switch (format_type) {
-                            case FORMAT_INTERNATIONAL:
+                            case TFORM_INTERNATIONAL:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
-                            case FORMAT_DOMESTIC:
+                            case TFORM_DOMESTIC:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = '-';
                                 formatted_digits[text_index++] = '0';
                             break;
+                            default:break;
                         }
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6817,13 +7801,14 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 if (subscriber) {
                     if (field_changed) {
                         switch (format_type) {
-                            case FORMAT_INTERNATIONAL:
+                            case TFORM_INTERNATIONAL:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
-                            case FORMAT_DOMESTIC:
+                            case TFORM_DOMESTIC:
                                 formatted_digits[text_index++] = '-';
                             break;
+                            default:break;
                         }
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6834,13 +7819,14 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 if (subscriber) {
                     if (field_changed) {
                         switch (format_type) {
-                            case FORMAT_INTERNATIONAL:
+                            case TFORM_INTERNATIONAL:
                                 if (prior_field != FIELD_INVALID)
                                     formatted_digits[text_index++] = ' ';
                             break;
-                            case FORMAT_DOMESTIC:
+                            case TFORM_DOMESTIC:
                                 formatted_digits[text_index++] = '-';
                             break;
+                            default:break;
                         }
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6848,10 +7834,73 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                 }
             break;
             case FIELD_INDIA_AREA_CODE:
+                if (area_code) {
+                    if (field_changed && format_type != TFORM_DIGITS_ONLY && prior_field != FIELD_INVALID) {
+                        formatted_digits[text_index++] = ' ';
+                    }
+                    formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
+                    prior_field = digit_field;
+                }
+            break;
             case FIELD_INDIA_SUB1:
             case FIELD_INDIA_SUB2:
                 if (subscriber) {
-                    if (field_changed && format_type != FORMAT_DIGITS_ONLY && prior_field != FIELD_INVALID) {
+                    if (field_changed && format_type != TFORM_DIGITS_ONLY && prior_field != FIELD_INVALID) {
+                        formatted_digits[text_index++] = ' ';
+                    }
+                    formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
+                    prior_field = digit_field;
+                }
+            break;
+            case FIELD_FRANCE_AREA_CODE:
+                if (area_code) {
+                    if (field_changed) {
+                        switch (format_type) {
+                            case TFORM_INTERNATIONAL:
+                                if (prior_field != FIELD_INVALID)
+                                    formatted_digits[text_index++] = ' ';
+                            break;
+                            case TFORM_DOMESTIC:
+                                formatted_digits[text_index++] = ' ';
+                                formatted_digits[text_index++] = '0';
+                            break;
+                            default:break;
+                        }
+                    }
+                    formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
+                    prior_field = digit_field;
+                }
+            break;
+            case FIELD_FRANCE_SUB:
+                if (subscriber) {
+                    if (format_type != TFORM_DIGITS_ONLY && prior_field != FIELD_INVALID && digit_index % 2 == 1)
+                        formatted_digits[text_index++] = ' ';
+                    formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
+                    prior_field = digit_field;
+                }
+            break;
+            case FIELD_ITALY_AREA_CODE:
+                if (area_code) {
+                    if (field_changed && format_type != TFORM_DIGITS_ONLY && prior_field != FIELD_INVALID) {
+                        formatted_digits[text_index++] = ' ';
+                    }
+                    formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
+                    prior_field = digit_field;
+                }
+            break;
+            case FIELD_ITALY_EX_CODE:
+                if (prefix) {
+                    if (field_changed && format_type != TFORM_DIGITS_ONLY && prior_field != FIELD_INVALID) {
+                        formatted_digits[text_index++] = ' ';
+                    }
+                    formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
+                    prior_field = digit_field;
+                }
+            break;
+            case FIELD_ITALY_SUB1:
+            case FIELD_ITALY_SUB2:
+                if (subscriber) {
+                    if (field_changed && format_type != TFORM_DIGITS_ONLY && prior_field != FIELD_INVALID) {
                         formatted_digits[text_index++] = ' ';
                     }
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
@@ -6861,7 +7910,7 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
             case FIELD_EXTENSION:
                 if (extension) {
                     if (field_changed && prior_field != FIELD_INVALID) {
-                        if (format_type == FORMAT_DIGITS_ONLY) {
+                        if (format_type == TFORM_DIGITS_ONLY) {
                             if (pause_confirm)
                                 formatted_digits[text_index++] = ';';
                         } else {
@@ -6869,7 +7918,7 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                             formatted_digits[text_index++] = 'x';
                         }
                     }
-                    if (format_type != FORMAT_DIGITS_ONLY || digit_value != DIGIT_SPECIAL)
+                    if (format_type != TFORM_DIGITS_ONLY || digit_value != DIGIT_SPECIAL)
                         formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
                     prior_field = digit_field;
                 }
@@ -6877,7 +7926,7 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
             case FIELD_DIGITS_QUALIFIER:
             break;
             case FIELD_DIGITS:
-                if (format_type != FORMAT_DIGITS_ONLY || digit_value != DIGIT_SPECIAL)
+                if (format_type != TFORM_DIGITS_ONLY || digit_value != DIGIT_SPECIAL)
                     formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
                 prior_field = digit_field;
             break;
@@ -6886,9 +7935,21 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
                     formatted_digits[text_index++] = '?';
                 }
                 formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
+                /*ereport(ERROR, (
+                    errmsg("The field index %d does not exist in this telephone number.  The number of fields is %d.", field_index,
+                field_count),
+                    errhint("There is a problem with the code.")));*/
             break;
         }
     }
+
+    if (text_index != 0 &&
+        parse_in->parse_state != STATE_DIGITS &&
+        parse_in->parse_state != STATE_EXTENSION_START &&
+        parse_in->parse_state != STATE_EXTENSION_DIGITS) {
+        formatted_digits[text_index++] = '^';
+    }
+
     formatted_digits[text_index++] = '\0';
 
     if (field_index != FIELD_INVALID && field_index > field_count)
@@ -6898,7 +7959,7 @@ void digits_format(struct parse_buffer * parse_in, char * formatted_digits, int 
             errhint("Only use a field index equal to or lower than the field count.")));
 }
 
-struct digit_letter digit_from_char(char digit_char) {
+static struct digit_letter digit_from_char(char digit_char) {
     struct digit_letter digit_letter;
 
     digit_letter.value = DIGIT_SPECIAL;
@@ -6935,7 +7996,6 @@ struct digit_letter digit_from_char(char digit_char) {
         break;
         case '9':
             digit_letter.value = 9;
-            //digit_letter.value = digit_char - '0';
         break;
         case '*':
             digit_letter.value = DIGIT_STAR;
@@ -7082,6 +8142,18 @@ struct digit_letter digit_from_char(char digit_char) {
     return digit_letter;
 }
 
+static void report_byte_format_error(struct parse_buffer * parse_in, int byte_index) {
+    ereport(
+        ERROR,
+        (   errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+            errmsg("Telephone error type %d, ID %d while loading the number in byte %d.", parse_in->error_code, parse_in->code_id,
+                byte_index),
+            errhint("Are you using older telephone code to read data created by newer telephone code?  Load the bytea cast and cast"
+                "it to examine the raw data.")
+        )
+    );
+}
+
 /*int service_query_nanp(struct parse_buffer * parse_in) {
     switch (parse_in->digit_values[1]) {
         case 8:
@@ -7093,15 +8165,15 @@ struct digit_letter digit_from_char(char digit_char) {
                 parse_in->digit_values[2] == 5 ||
                 parse_in->digit_values[2] == 4) &&
                 parse_in->digit_values[2] == parse_in->digit_values[3])
-                return SERVICE_TOLLFREE;
+                return TSERV_TOLLFREE;
         case 9:
             if (parse_in->digit_values[2] == 0 && parse_in->digit_values[3] == 0)
-                return SERVICE_CHARGE;
+                return TSERV_CHARGE;
     }
-    return SERVICE_UNKNOWN_UNKNOWN;
+    return TSERV_UNKNOWN_UNKNOWN;
 }*/
 
-int service_query_russia(struct parse_buffer * parse_in) {
+static int service_query_russia(struct parse_buffer * parse_in) {
     switch (parse_in->digit_values[1] * 100 + parse_in->digit_values[2] * 10 + parse_in->digit_values[3]) {
         case 301:
         case 302:
@@ -7194,11 +8266,11 @@ int service_query_russia(struct parse_buffer * parse_in) {
         case 877:
         case 878:
         case 879:
-            return SERVICE_LAND;
+            return TSERV_LAND;
         case 800:
-            return SERVICE_TOLLFREE;
+            return TSERV_TOLLFREE;
         case 809:
-            return SERVICE_CHARGE;
+            return TSERV_CHARGE;
         case 901:
         case 902:
         case 903:
@@ -7248,37 +8320,146 @@ int service_query_russia(struct parse_buffer * parse_in) {
         case 988:
         case 989:
         case 997:
-            return SERVICE_CELL;
+            return TSERV_CELL;
     }
 
     // This makes some of the codes above redundant.
     if (parse_in->digit_values[1] == 3 || parse_in->digit_values[1] == 4)
-        return SERVICE_LAND;
+        return TSERV_LAND;
 
-    return SERVICE_UNKNOWN_UNKNOWN;
+    return TSERV_UNKNOWN_UNKNOWN;
 }
 
-int service_get(struct parse_buffer * parse_in) {
+static enum TelephoneService service_get(struct parse_buffer * parse_in) {
     switch (parse_in->service_type) {
-        case SERVICE_NEED_TO_PARSE:
-            return SERVICE_UNKNOWN_UNKNOWN;
-        case SERVICE_LAND:
-            return SERVICE_LAND;
-        case SERVICE_TOLLFREE:
-            return SERVICE_TOLLFREE;
-        case SERVICE_CHARGE:
-            return SERVICE_CHARGE;
-        case SERVICE_CELL:
-            return SERVICE_CELL;
-        //case SERVICE_QUERY_NANP:
+        case TSERV_KNOWN_UNKNOWN:
+            return TSERV_KNOWN_UNKNOWN;
+        case TSERV_NEED_TO_PARSE:
+            return TSERV_UNKNOWN_UNKNOWN;
+        case TSERV_LAND:
+            return TSERV_LAND;
+        case TSERV_OTHER_GEO:
+            return TSERV_OTHER_GEO;
+        case TSERV_LAND_OR_CELL:
+            return TSERV_LAND_OR_CELL;
+        case TSERV_CELL:
+            return TSERV_CELL;
+        case TSERV_PAGER:
+            return TSERV_PAGER;
+        case TSERV_VOIP:
+            return TSERV_VOIP;
+        case TSERV_FOLLOW_ME:
+            return TSERV_FOLLOW_ME;
+        case TSERV_TOLLFREE:
+            return TSERV_TOLLFREE;
+        case TSERV_SHARED_COST:
+            return TSERV_SHARED_COST;
+        case TSERV_CALLER_COST:
+            return TSERV_CALLER_COST;
+        case TSERV_CHARGE:
+            return TSERV_CHARGE;
+        case TSERV_CARRIER_SERVICES_INTRA:
+            return TSERV_CARRIER_SERVICES_INTRA;
+        case TSERV_CARRIER_SERVICES_INTERNATIONAL:
+            return TSERV_CARRIER_SERVICES_INTERNATIONAL;
+        case TSERV_VOICEMAIL:
+            return TSERV_VOICEMAIL;
+        case TSERV_GOVERNMENT:
+            return TSERV_GOVERNMENT;
+        case TSERV_OTHER:
+            return TSERV_OTHER;
+        //case TSERV_QUERY_NANP:
         //    return service_query_nanp(parse_in);
-        case SERVICE_QUERY_RUSSIA:
+        case TSERV_QUERY_RUSSIA:
             return service_query_russia(parse_in);
+        default:
+            return TSERV_UNKNOWN_UNKNOWN;
     }
-    return SERVICE_UNKNOWN_UNKNOWN;
 }
 
-void report_parse_error(struct parse_buffer * parse_in, char *phone_text, int text_index) {
+static int geo_is(struct parse_buffer * parse_in) {
+    switch (service_get(parse_in)) {
+        case TSERV_LAND:
+        case TSERV_OTHER_GEO:
+        case TSERV_LAND_OR_CELL:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+PG_FUNCTION_INFO_V1(telephone_geo_is);
+Datum
+telephone_geo_is(PG_FUNCTION_ARGS)
+{
+    bytea   *vlena      = PG_GETARG_BYTEA_P(0);
+    char    *phone_hex  = VARDATA(vlena);
+    int     hex_len     = VARSIZE(vlena) - VARHDRSZ;
+    int     is_digits_only;
+    int     is_letter_mask;
+
+    struct parse_buffer parse_out;
+    parse_out.parse_state       = STATE_CALLING_CODE_START;  // Only valid if !is_digits_only
+    parse_out.digit_pos_next    = 0;
+    parse_out.error_code        = ERROR_PARSE_STATE_OR_OTHER;
+    parse_out.service_type      = TSERV_NEED_TO_PARSE;
+    //memset(parse_out.digit_values, 0, sizeof(parse_out.digit_values));
+    //memset(parse_out.digit_valuesmask, 0, sizeof(parse_out.digit_valuesmask));
+    //memset(parse_out.digit_fields, 0, sizeof(parse_out.digit_fields));
+    parse_out.code_id = 0;
+
+    is_digits_only = ((phone_hex[0] >> 4) & 0xF) == DIGIT_BIN_SPECIAL;
+    if (is_digits_only)
+        PG_RETURN_NULL();
+
+    is_letter_mask = phone_hex[hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
+
+    if (is_letter_mask)
+        hex_len = hex_len / 3; // Remove letter mask from digits hex len.
+
+    {
+        struct digit_letter digit_letter;
+        int last_hex_index = hex_len - 1;
+        int hex_index;
+        digit_letter.letter_index = 0;
+        digit_letter.invalid_char = 0;
+        for(hex_index = 0; hex_index < hex_len; ++hex_index) {
+            int hex_value = phone_hex[hex_index];
+            int nibble1 = ((hex_value >> 4) & 0xF) + DIGIT_BIN_OFFSET;
+            int nibble2 = (hex_value & 0xF) + DIGIT_BIN_OFFSET;
+
+            digit_letter.value = nibble1;
+            parse_digit(digit_letter, &parse_out);
+            if (parse_out.parse_state == STATE_ERROR)
+                break;
+            if (parse_out.service_type != TSERV_NEED_TO_PARSE)
+                PG_RETURN_BOOL(geo_is(&parse_out));
+
+            // Do not read the filler nibble.
+            if (hex_index == last_hex_index && nibble2 == DIGIT_SPECIAL)
+                break;
+
+            digit_letter.value = nibble2;
+            parse_digit(digit_letter, &parse_out);
+            if (parse_out.parse_state == STATE_ERROR)
+                break;
+            if (parse_out.service_type != TSERV_NEED_TO_PARSE)
+                PG_RETURN_BOOL(geo_is(&parse_out));
+        }
+
+        if (parse_out.parse_state == STATE_ERROR)
+            report_byte_format_error(&parse_out, hex_index);
+    }
+
+    ereport(
+        ERROR,
+        (   errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+            errmsg("Cannot find geo status.")
+        )
+    );
+}
+
+static void report_parse_error(struct parse_buffer * parse_in, char *phone_text, int text_index) {
     switch (parse_in->error_code) {
         case ERROR_CALLING_CODE_START_INVALID:
         case ERROR_AREA_CODE_START_INVALID:
@@ -7366,98 +8547,96 @@ void report_parse_error(struct parse_buffer * parse_in, char *phone_text, int te
     }
 }
 
-bytea * telephone_char_to_bytea(char *phone_text) {
+static bytea * telephone_parse_buffer_to_bytea(struct parse_buffer *parse_in, int is_letter_mask, int digit_end, int digit_start) {
     bytea  *result;
+    //int is_digits_format = parse_in.parse_state == STATE_START || parse_in.parse_state == STATE_DIGITS;
+    int hex_len = digit_end - digit_start;
+
+    // Add for odd nibble.
+    if (hex_len % 2 != 0)
+        hex_len++;
+
+    // Add for mask indicator.
+    if (is_letter_mask) {
+        hex_len = hex_len / 2 + parse_in->digit_pos_next + 1;
+    } else {
+        hex_len = hex_len / 2;
+    }
+
+    result = palloc0(hex_len + VARHDRSZ);
+    {
+        char * hex_array = VARDATA(result);
+        char nibbles;
+        int on_nibble2 = 0;
+        int hex_index = 0;
+        int digit_index;
+        SET_VARSIZE(result, hex_len + VARHDRSZ);
+        for(digit_index = digit_start; digit_index < digit_end; ++digit_index) {
+            if (on_nibble2) {
+                nibbles = nibbles | (parse_in->digit_values[digit_index] - DIGIT_BIN_OFFSET);
+                hex_array[hex_index++] = nibbles;
+                on_nibble2 = 0;
+            } else {
+                nibbles = ((parse_in->digit_values[digit_index] - DIGIT_BIN_OFFSET) << 4);
+                on_nibble2 = 1;
+            }
+        }
+        if (on_nibble2) {
+            hex_array[hex_index++] = nibbles;
+            on_nibble2 = 0;
+        }
+
+        if (is_letter_mask) {
+            for(digit_index = 0; digit_index < parse_in->digit_pos_next; ++digit_index) {
+                hex_array[hex_index++] = parse_in->digit_valuesmask[digit_index];
+            }
+            hex_array[hex_index++] = DIGIT_BIN_HEX_SPECIAL_SPECIAL;
+        }
+
+        if (hex_index != hex_len) {
+            ereport(
+                ERROR,
+                (   errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+                    errmsg("The data was not allocated correctly or not written correctly.")
+                )
+            );
+        }
+    }
+
+    return result;
+}
+
+static bytea * telephone_char_to_bytea(char *phone_text) {
     int     is_letter_mask = 0;
     struct  parse_buffer parse_out;
 
     parse_out.parse_state = STATE_START;
     parse_out.digit_pos_next = 0;
     parse_out.error_code = ERROR_PARSE_STATE_OR_OTHER;
-    parse_out.service_type = SERVICE_NEED_TO_PARSE;
+    parse_out.service_type = TSERV_NEED_TO_PARSE;
     //memset(parse_out.digit_values, 0, sizeof(parse_out.digit_values));
     //memset(parse_out.digit_valuesmask, 0, sizeof(parse_out.digit_valuesmask));
     //memset(parse_out.digit_fields, 0, sizeof(parse_out.digit_fields));
+    parse_out.code_id = 0;
 
     {
         int text_index;
         char current_char;
         struct digit_letter digit_letter;
         for(text_index = 0; phone_text[text_index] != 0; ++text_index) {
-            if (text_index >= 60)
+            if (parse_out.digit_pos_next >= MAX_DIGITS - MAX_STORAGE_HEADER)
                 ereport(ERROR, (
                     errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-                    errmsg("A telephone number must not consist of more than 60 characters.  The text is \"%s\".", phone_text),
+                    errmsg("A telephone number must not consist of more than %u characters.  The text is \"%s\".",
+                           MAX_DIGITS - MAX_STORAGE_HEADER, phone_text),
                     errhint("Only store actual telephone numbers and extensions.")));
 
             current_char = phone_text[text_index];
             digit_letter = digit_from_char(current_char);
             parse_digit(digit_letter, &parse_out);
-            if (parse_out.parse_state == STATE_ERROR)
-                report_parse_error(&parse_out, phone_text, text_index);
-        }
-    }
-
-    {
-        int digit_index;
-        for(digit_index = 0; digit_index < parse_out.digit_pos_next; ++digit_index) {
-            if (parse_out.digit_valuesmask[digit_index] != 0)
-                is_letter_mask = 1;
-        }
-    }
-
-    {
-        int digit_index;
-        //int is_digits_format = parse_out.parse_state == STATE_START || parse_out.parse_state == STATE_DIGITS;
-        int hex_len = parse_out.digit_pos_next;
-
-        // Add for odd nibble.
-        if (hex_len % 2 != 0)
-            hex_len++;
-
-        // Add for mask indicator.
-        if (is_letter_mask) {
-            hex_len = hex_len / 2 + parse_out.digit_pos_next + 1;
-        } else {
-            hex_len = hex_len / 2;
-        }
-
-        result = palloc(hex_len + VARHDRSZ);
-        {
-            char * hex_array = VARDATA(result);
-            char nibbles;
-            int on_nibble2 = 0;
-            int hex_index = 0;
-            SET_VARSIZE(result, hex_len + VARHDRSZ);
-            for(digit_index = 0; digit_index < parse_out.digit_pos_next; ++digit_index) {
-                if (on_nibble2) {
-                    nibbles = nibbles | (parse_out.digit_values[digit_index] - DIGIT_BIN_OFFSET);
-                    hex_array[hex_index++] = nibbles;
-                    on_nibble2 = 0;
-                } else {
-                    nibbles = ((parse_out.digit_values[digit_index] - DIGIT_BIN_OFFSET) << 4);
-                    on_nibble2 = 1;
-                }
-            }
-            if (on_nibble2) {
-                hex_array[hex_index++] = nibbles;
-                on_nibble2 = 0;
-            }
-
-            if (is_letter_mask) {
-                for(digit_index = 0; digit_index < parse_out.digit_pos_next; ++digit_index) {
-                    hex_array[hex_index++] = parse_out.digit_valuesmask[digit_index];
-                }
-                hex_array[hex_index++] = DIGIT_BIN_HEX_SPECIAL_SPECIAL;
-            }
-
-            if (hex_index != hex_len) {
-                ereport(
-                    ERROR,
-                    (   errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-                        errmsg("The data was not allocated correctly or not written correctly.")
-                    )
-                );
+            if (parse_out.parse_state == STATE_ERROR) {
+                if (digit_letter.invalid_char != '^' || phone_text[text_index + 1] != 0)
+                    report_parse_error(&parse_out, phone_text, text_index);
             }
         }
     }
@@ -7468,22 +8647,18 @@ bytea * telephone_char_to_bytea(char *phone_text) {
             errmsg("The telephone number is not complete.  The text is \"%s\".", phone_text),
             errhint("Add the missing digits or use the digits format to store this telephone number by removing the +.")));
 
-    return result;
+    {
+        int digit_index;
+        for(digit_index = 0; digit_index < parse_out.digit_pos_next; ++digit_index) {
+            if (parse_out.digit_valuesmask[digit_index] != 0)
+                is_letter_mask = 1;
+        }
+    }
+
+    return telephone_parse_buffer_to_bytea(&parse_out, is_letter_mask, parse_out.digit_pos_next, 0);
 }
 
-void report_byte_format_error(struct parse_buffer * parse_in, int byte_index) {
-    ereport(
-        ERROR,
-        (   errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-            errmsg("Telephone error type %d, ID %d while loading the number in byte %d.", parse_in->error_code, parse_in->code_id,
-                byte_index),
-            errhint("Are you using older telephone code to read data created by newer telephone code?  Load the bytea cast and cast"
-                "it to examine the raw data.")
-        )
-    );
-}
-
-struct parse_buffer telephone_bytea_to_parse_buffer(bytea *vlena) {
+static struct parse_buffer telephone_bytea_to_parse_buffer(bytea *vlena) {
     char    *phone_hex  = VARDATA(vlena);
     int     hex_len     = VARSIZE(vlena) - VARHDRSZ;
     int     is_digits_only;
@@ -7494,10 +8669,11 @@ struct parse_buffer telephone_bytea_to_parse_buffer(bytea *vlena) {
     parse_out.parse_state = STATE_START;
     parse_out.digit_pos_next = 0;
     parse_out.error_code = ERROR_PARSE_STATE_OR_OTHER;
-    parse_out.service_type = SERVICE_NEED_TO_PARSE;
+    parse_out.service_type = TSERV_NEED_TO_PARSE;
     //memset(parse_out.digit_values, 0, sizeof(parse_out.digit_values));
     //memset(parse_out.digit_valuesmask, 0, sizeof(parse_out.digit_valuesmask));
     //memset(parse_out.digit_fields, 0, sizeof(parse_out.digit_fields));
+    parse_out.code_id = 0;
 
     is_digits_only = ((phone_hex[0] >> 4) & 0xF) == DIGIT_BIN_SPECIAL;
     is_letter_mask = phone_hex[hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
@@ -7519,6 +8695,7 @@ struct parse_buffer telephone_bytea_to_parse_buffer(bytea *vlena) {
         int hex_index;
         digit_letter.letter_index = 0;
         digit_letter.invalid_char = 0;
+        readhex:
         for(hex_index = 0; hex_index < hex_len; ++hex_index) {
             int hex_value = phone_hex[hex_index];
             int nibble1 = ((hex_value >> 4) & 0xF) + DIGIT_BIN_OFFSET;
@@ -7549,6 +8726,18 @@ struct parse_buffer telephone_bytea_to_parse_buffer(bytea *vlena) {
                 break;
         }
 
+        // If a different version of telephone wrote data that is incompatible with this version, retry the calling code data with
+        // the digits mode.
+        if (parse_out.parse_state == STATE_ERROR && !is_digits_only) {
+            is_digits_only = 1;
+            parse_out.parse_state = STATE_DIGITS;
+            parse_out.digit_pos_next = 0;
+            parse_out.error_code = ERROR_PARSE_STATE_OR_OTHER;
+            parse_out.service_type = TSERV_NEED_TO_PARSE;
+            parse_out.code_id = 0;
+            goto readhex;
+        }
+
         if (parse_out.parse_state == STATE_ERROR)
             report_byte_format_error(&parse_out, hex_index);
     }
@@ -7556,11 +8745,12 @@ struct parse_buffer telephone_bytea_to_parse_buffer(bytea *vlena) {
     return parse_out;
 }
 
-char * telephone_bytea_to_char(bytea *vlena) {
+static char * telephone_bytea_to_char(bytea *vlena) {
     struct parse_buffer parse_out = telephone_bytea_to_parse_buffer(vlena);
-    char *formatted_digits = (char *) palloc(parse_out.digit_pos_next + 5 + additional_space_count(&parse_out));
+    char *formatted_digits = (char *) palloc(parse_out.digit_pos_next + CALLING_CODE_FORMATTING_MAX_LEN +
+        additional_space_count(&parse_out));
 
-    digits_format(&parse_out, formatted_digits, FORMAT_INTERNATIONAL, FIELD_INVALID, 1, 1, 1, 1, 1, 1, 1);
+    digits_format(&parse_out, formatted_digits, TFORM_INTERNATIONAL, FIELD_INVALID, 1, 1, 1, 1, 1, 1, 1);
     return formatted_digits;
 }
 
@@ -7602,9 +8792,9 @@ telephone_to_text(PG_FUNCTION_ARGS)
     PG_RETURN_TEXT_P(return_text);
 }
 
-PG_FUNCTION_INFO_V1(text_to_telephone);
+PG_FUNCTION_INFO_V1(telephone_from_text);
 Datum
-text_to_telephone(PG_FUNCTION_ARGS)
+telephone_from_text(PG_FUNCTION_ARGS)
 {
     text    *arg_text = PG_GETARG_TEXT_P(0);
     char    *phone_text = DatumGetCString(DirectFunctionCall1(textout, PointerGetDatum(arg_text)));
@@ -7631,37 +8821,6 @@ telephone_recv(PG_FUNCTION_ARGS)
     PG_RETURN_BYTEA_P(result);
 }
 
-/*Datum
-telephone_recv(PG_FUNCTION_ARGS)
-{
-    StringInfo  buf = (StringInfo) PG_GETARG_POINTER(0);
-    char        *str;
-    Telephone   *result;
-    int         nbytes;
-
-    str = pq_getmsgtext(buf, buf->len - buf->cursor, &nbytes);
-
-    result = (Telephone *) palloc(sizeof(Telephone));
-    result->hex = pq_getmsgbytes(buf);
-    result->len = nbytes;
-    PG_RETURN_POINTER(result);
-}*/
-
-/*Datum
-telephone_recv(PG_FUNCTION_ARGS)
-{
-    StringInfo  buf = (StringInfo) PG_GETARG_POINTER(0);
-    char       *str;
-    int         nbytes;
-
-    str = pq_getmsgtext(buf, buf->len - buf->cursor, &nbytes);
-
-    result = (Telephone *) palloc(sizeof(Telephone));
-    result->hex = pq_getmsgbytes(buf);
-    result->len = nbytes;
-    PG_RETURN_POINTER(result);
-}*/
-
 PG_FUNCTION_INFO_V1(telephone_send);
 
 Datum
@@ -7672,44 +8831,11 @@ telephone_send(PG_FUNCTION_ARGS)
     PG_RETURN_BYTEA_P(vlena);
 }
 
-/*Datum
-telephone_send(PG_FUNCTION_ARGS)
-{
-    Telephone       *telephone = (Telephone *) PG_GETARG_POINTER(0);
-    StringInfoData  buf;
-
-    pq_begintypsend(&buf);
-    pq_sendbytes(&buf, telephone->hex, telephone->len);
-    PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
-    pfree(telephone->hex);
-    pfree(telephone);
-}*/
-/*
-Datum
-telephone_send(PG_FUNCTION_ARGS)
-{
-    Jsonb      *jb = PG_GETARG_JSONB(0);
-    StringInfoData buf;
-    StringInfo  jtext = makeStringInfo();
-    int         version = 1;
-
-    (void) JsonbToCString(jtext, &jb->root, VARSIZE(jb));
-
-    pq_begintypsend(&buf);
-    pq_sendtext(&buf, jtext->data, jtext->len);
-    pfree(jtext->data);
-    pfree(jtext);
-
-    PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
-}*/
-
-
 /*****************************************************************************
  * Indexing functions
  *****************************************************************************/
 
-static int32
-telephone_cmp_internal(bytea *vlena1, bytea *vlena2)
+static int32 telephone_cmp_internal(bytea *vlena1, bytea *vlena2)
 {
     char    *phone_hex1 = VARDATA(vlena1);
     int     hex_len1    = VARSIZE(vlena1) - VARHDRSZ;
@@ -7717,7 +8843,7 @@ telephone_cmp_internal(bytea *vlena1, bytea *vlena2)
     char    *phone_hex2 = VARDATA(vlena2);
     int     hex_len2    = VARSIZE(vlena2) - VARHDRSZ;
     int     is_letter_mask2 = phone_hex2[hex_len2 - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
-    int     hex_index;
+    int     result;
 
     if (is_letter_mask1)
         hex_len1 = hex_len1 / 3; // Remove letter mask from digits hex len.
@@ -7725,24 +8851,16 @@ telephone_cmp_internal(bytea *vlena1, bytea *vlena2)
     if (is_letter_mask2)
         hex_len2 = hex_len2 / 3; // Remove letter mask from digits hex len.
 
-    if      (hex_len1 < hex_len2)
-        return -1;
-    else if (hex_len1 > hex_len2)
-        return 1;
+    result = memcmp(phone_hex1, phone_hex2, Min(hex_len1, hex_len2));
 
-    for(hex_index = 0; hex_index < hex_len1; ++hex_index) {
-        if      (phone_hex1[hex_index] < phone_hex2[hex_index])
-            return -1;
-        else if (phone_hex1[hex_index] > phone_hex2[hex_index])
-            return 1;
-    }
-    return 0;
+    if ((result == 0) && (hex_len1 != hex_len2))
+        result = (hex_len1 < hex_len2) ? -1 : 1;
+
+    return result;
 }
 
 PG_FUNCTION_INFO_V1(telephone_cmp);
-
-Datum
-telephone_cmp(PG_FUNCTION_ARGS)
+Datum telephone_cmp(PG_FUNCTION_ARGS)
 {
     bytea    *vlena1 = PG_GETARG_BYTEA_P(0);
     bytea    *vlena2 = PG_GETARG_BYTEA_P(1);
@@ -7751,9 +8869,7 @@ telephone_cmp(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_hash);
-
-Datum
-telephone_hash(PG_FUNCTION_ARGS)
+Datum telephone_hash(PG_FUNCTION_ARGS)
 {
     bytea   *vlena = PG_GETARG_BYTEA_P(0);
     char    *phone_hex = VARDATA(vlena);
@@ -7777,9 +8893,7 @@ telephone_hash(PG_FUNCTION_ARGS)
  *****************************************************************************/
 
 PG_FUNCTION_INFO_V1(telephone_lt);
-
-Datum
-telephone_lt(PG_FUNCTION_ARGS)
+Datum telephone_lt(PG_FUNCTION_ARGS)
 {
     bytea    *vlena1 = PG_GETARG_BYTEA_P(0);
     bytea    *vlena2 = PG_GETARG_BYTEA_P(1);
@@ -7788,9 +8902,7 @@ telephone_lt(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_le);
-
-Datum
-telephone_le(PG_FUNCTION_ARGS)
+Datum telephone_le(PG_FUNCTION_ARGS)
 {
     bytea    *vlena1 = PG_GETARG_BYTEA_P(0);
     bytea    *vlena2 = PG_GETARG_BYTEA_P(1);
@@ -7799,9 +8911,7 @@ telephone_le(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_eq);
-
-Datum
-telephone_eq(PG_FUNCTION_ARGS)
+Datum telephone_eq(PG_FUNCTION_ARGS)
 {
     bytea    *vlena1 = PG_GETARG_BYTEA_P(0);
     bytea    *vlena2 = PG_GETARG_BYTEA_P(1);
@@ -7810,9 +8920,7 @@ telephone_eq(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_ge);
-
-Datum
-telephone_ge(PG_FUNCTION_ARGS)
+Datum telephone_ge(PG_FUNCTION_ARGS)
 {
     bytea    *vlena1 = PG_GETARG_BYTEA_P(0);
     bytea    *vlena2 = PG_GETARG_BYTEA_P(1);
@@ -7821,9 +8929,7 @@ telephone_ge(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_gt);
-
-Datum
-telephone_gt(PG_FUNCTION_ARGS)
+Datum telephone_gt(PG_FUNCTION_ARGS)
 {
     bytea    *vlena1 = PG_GETARG_BYTEA_P(0);
     bytea    *vlena2 = PG_GETARG_BYTEA_P(1);
@@ -7832,9 +8938,7 @@ telephone_gt(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_ne);
-
-Datum
-telephone_ne(PG_FUNCTION_ARGS)
+Datum telephone_ne(PG_FUNCTION_ARGS)
 {
     bytea    *vlena1 = PG_GETARG_BYTEA_P(0);
     bytea    *vlena2 = PG_GETARG_BYTEA_P(1);
@@ -7847,9 +8951,7 @@ telephone_ne(PG_FUNCTION_ARGS)
  *****************************************************************************/
 
 PG_FUNCTION_INFO_V1(telephone_smaller);
-
-Datum
-telephone_smaller(PG_FUNCTION_ARGS)
+Datum telephone_smaller(PG_FUNCTION_ARGS)
 {
    bytea *left  = PG_GETARG_BYTEA_P(0);
    bytea *right = PG_GETARG_BYTEA_P(1);
@@ -7860,9 +8962,7 @@ telephone_smaller(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_larger);
-
-Datum
-telephone_larger(PG_FUNCTION_ARGS)
+Datum telephone_larger(PG_FUNCTION_ARGS)
 {
    bytea *left  = PG_GETARG_BYTEA_P(0);
    bytea *right = PG_GETARG_BYTEA_P(1);
@@ -7873,63 +8973,99 @@ telephone_larger(PG_FUNCTION_ARGS)
 }
 
 
-int mode_get(bytea *vlena) {
+static enum TelephoneMode mode_get(bytea *vlena) {
     char    *phone_hex  = VARDATA(vlena);
 
     if (((phone_hex[0] >> 4) & 0xF) == DIGIT_BIN_SPECIAL)
-        return 2;
+        return TMODE_DIGITS;
     else
-        return 1;
+        return TMODE_CALLING_CODE;
 }
 
-
-PG_FUNCTION_INFO_V1(telephone_to_string);
-
-Datum
-telephone_to_string(PG_FUNCTION_ARGS)
+PG_FUNCTION_INFO_V1(telephone_to_format);
+Datum telephone_to_format(PG_FUNCTION_ARGS)
 {
-    //Telephone   *telephone      = (Telephone *) PG_GETARG_POINTER(0);
     //Telephone   *telephone      = (Telephone *) PG_GETARG_VARLENA_P(0);
-    bytea   *vlena                  = PG_GETARG_BYTEA_P(0);
-    int32   format_type             = PG_GETARG_INT32(1);
-    bool    calling_code            = PG_GETARG_BOOL(2);
-    bool    area_code               = PG_GETARG_BOOL(3);
-    bool    prefix                  = PG_GETARG_BOOL(4);
-    bool    subscriber              = PG_GETARG_BOOL(5);
-    bool    extension               = PG_GETARG_BOOL(6);
-    bool    letters                 = PG_GETARG_BOOL(7);
-    bool    pause_confirm           = PG_GETARG_BOOL(8);
-    bool    allow_digits_mode       = PG_GETARG_BOOL(9);
-    char    *formatted_digits;
+    bytea       *vlena              = PG_GETARG_BYTEA_P(0);
+    Oid         format_type_oid     = PG_GETARG_OID(1);
+    bool        inclusive_subfields = PG_GETARG_BOOL(2);
+    ArrayType   *subfields          = PG_GETARG_ARRAYTYPE_P(3);
+    bool        letters             = PG_GETARG_BOOL(4);
+    bool        pause_confirm       = PG_GETARG_BOOL(5);
+    bool        allow_digits_mode   = PG_GETARG_BOOL(6);
+    bool        tsf_digits, tsf_calling_code,
+                tsf_group1, tsf_group2, tsf_group3, tsf_group4,
+                tsf_subscriber, tsf_extension;
+    char        *formatted_digits;
     struct parse_buffer parse_out;
+    enum TelephoneFormat format_type = TFORM_INTERNATIONAL;
+
+    init_oids_format();
+    if (format_type_oid == format_oids[TFORM_INTERNATIONAL]) {
+        format_type = TFORM_INTERNATIONAL;
+    } else if (format_type_oid == format_oids[TFORM_DOMESTIC]) {
+        format_type = TFORM_DOMESTIC;
+    } else if (format_type_oid == format_oids[TFORM_DIGITS_ONLY]) {
+        format_type = TFORM_DIGITS_ONLY;
+    }
 
     if (!allow_digits_mode)
-        if (mode_get(vlena) != 1)
+        if (mode_get(vlena) != TMODE_CALLING_CODE)
              PG_RETURN_NULL();
 
+    tsf_digits = tsf_calling_code =
+        tsf_group1 = tsf_group2 = tsf_group3 = tsf_group4 =
+        tsf_subscriber = tsf_extension = inclusive_subfields == 0;
+
+    init_oids_subfield();
+    {
+        Datum       subfield;
+        bool        isnull;
+        ArrayIterator array_iterator = array_create_iterator(subfields, 0, NULL);
+
+        while (array_iterate(array_iterator, &subfield, &isnull)) {
+            if (subfield == subfield_oids[TSF_DIGITS]) {
+                tsf_digits = inclusive_subfields;
+            } else if (subfield == subfield_oids[TSF_CALLING_CODE]) {
+                tsf_calling_code = inclusive_subfields;
+            } else if (subfield == subfield_oids[TSF_GROUP1]) {
+                tsf_group1 = inclusive_subfields;
+            } else if (subfield == subfield_oids[TSF_GROUP2]) {
+                tsf_group2 = inclusive_subfields;
+            } else if (subfield == subfield_oids[TSF_GROUP3]) {
+                tsf_group3 = inclusive_subfields;
+            } else if (subfield == subfield_oids[TSF_GROUP4]) {
+                tsf_group4 = inclusive_subfields;
+            } else if (subfield == subfield_oids[TSF_SUBSCRIBER]) {
+                tsf_subscriber = inclusive_subfields;
+            } else if (subfield == subfield_oids[TSF_EXTENSION]) {
+                tsf_extension = inclusive_subfields;
+            }
+        }
+        array_free_iterator(array_iterator);
+    }
+
     parse_out = telephone_bytea_to_parse_buffer(vlena);
-    formatted_digits = (char *) palloc(parse_out.digit_pos_next + 5 + additional_space_count(&parse_out));
-    digits_format(&parse_out, formatted_digits, format_type, FIELD_INVALID, calling_code, area_code, prefix, subscriber, extension,
-        letters, pause_confirm);
+    formatted_digits = (char *) palloc(parse_out.digit_pos_next + CALLING_CODE_FORMATTING_MAX_LEN +
+        additional_space_count(&parse_out));
+    digits_format(&parse_out, formatted_digits, format_type, FIELD_INVALID, tsf_calling_code, tsf_group1, tsf_group2,
+                  tsf_subscriber, tsf_extension, letters, pause_confirm);
     PG_RETURN_TEXT_P(cstring_to_text(formatted_digits));
 }
 
 
 PG_FUNCTION_INFO_V1(telephone_mode_get);
-
-Datum
-telephone_mode_get(PG_FUNCTION_ARGS)
+Datum telephone_mode_get(PG_FUNCTION_ARGS)
 {
     bytea   *vlena      = PG_GETARG_BYTEA_P(0);
 
-    PG_RETURN_INT16(mode_get(vlena));
+    init_oids_mode();
+    PG_RETURN_OID(mode_oids[mode_get(vlena)]);
 }
 
 
 PG_FUNCTION_INFO_V1(telephone_calling_code_get);
-
-Datum
-telephone_calling_code_get(PG_FUNCTION_ARGS)
+Datum telephone_calling_code_get(PG_FUNCTION_ARGS)
 {
     bytea   *vlena      = PG_GETARG_BYTEA_P(0);
     char    *phone_hex  = VARDATA(vlena);
@@ -7941,10 +9077,11 @@ telephone_calling_code_get(PG_FUNCTION_ARGS)
     parse_out.parse_state       = STATE_CALLING_CODE_START;  // Only valid if !is_digits_only
     parse_out.digit_pos_next    = 0;
     parse_out.error_code        = ERROR_PARSE_STATE_OR_OTHER;
-    parse_out.service_type      = SERVICE_NEED_TO_PARSE;
+    parse_out.service_type      = TSERV_NEED_TO_PARSE;
     //memset(parse_out.digit_values, 0, sizeof(parse_out.digit_values));
     //memset(parse_out.digit_valuesmask, 0, sizeof(parse_out.digit_valuesmask));
     //memset(parse_out.digit_fields, 0, sizeof(parse_out.digit_fields));
+    parse_out.code_id = 0;
 
     is_digits_only = ((phone_hex[0] >> 4) & 0xF) == DIGIT_BIN_SPECIAL;
     if (is_digits_only)
@@ -7999,9 +9136,7 @@ telephone_calling_code_get(PG_FUNCTION_ARGS)
 
 
 PG_FUNCTION_INFO_V1(telephone_service_get);
-
-Datum
-telephone_service_get(PG_FUNCTION_ARGS)
+Datum telephone_service_get(PG_FUNCTION_ARGS)
 {
     bytea   *vlena      = PG_GETARG_BYTEA_P(0);
     char    *phone_hex  = VARDATA(vlena);
@@ -8013,10 +9148,11 @@ telephone_service_get(PG_FUNCTION_ARGS)
     parse_out.parse_state       = STATE_CALLING_CODE_START;  // Only valid if !is_digits_only
     parse_out.digit_pos_next    = 0;
     parse_out.error_code        = ERROR_PARSE_STATE_OR_OTHER;
-    parse_out.service_type      = SERVICE_NEED_TO_PARSE;
+    parse_out.service_type      = TSERV_NEED_TO_PARSE;
     //memset(parse_out.digit_values, 0, sizeof(parse_out.digit_values));
     //memset(parse_out.digit_valuesmask, 0, sizeof(parse_out.digit_valuesmask));
     //memset(parse_out.digit_fields, 0, sizeof(parse_out.digit_fields));
+    parse_out.code_id = 0;
 
     is_digits_only = ((phone_hex[0] >> 4) & 0xF) == DIGIT_BIN_SPECIAL;
     if (is_digits_only)
@@ -8027,6 +9163,7 @@ telephone_service_get(PG_FUNCTION_ARGS)
     if (is_letter_mask)
         hex_len = hex_len / 3; // Remove letter mask from digits hex len.
 
+    init_oids_service();
     {
         struct digit_letter digit_letter;
         int last_hex_index = hex_len - 1;
@@ -8042,8 +9179,8 @@ telephone_service_get(PG_FUNCTION_ARGS)
             parse_digit(digit_letter, &parse_out);
             if (parse_out.parse_state == STATE_ERROR)
                 break;
-            if (parse_out.service_type != SERVICE_NEED_TO_PARSE)
-                PG_RETURN_INT16(service_get(&parse_out));
+            //if (parse_out.service_type != TSERV_NEED_TO_PARSE)
+            //    PG_RETURN_OID(service_oids[service_get(&parse_out)]);
 
             // Do not read the filler nibble.
             if (hex_index == last_hex_index && nibble2 == DIGIT_SPECIAL)
@@ -8053,13 +9190,16 @@ telephone_service_get(PG_FUNCTION_ARGS)
             parse_digit(digit_letter, &parse_out);
             if (parse_out.parse_state == STATE_ERROR)
                 break;
-            if (parse_out.service_type != SERVICE_NEED_TO_PARSE)
-                PG_RETURN_INT16(service_get(&parse_out));
+            //if (parse_out.service_type != TSERV_NEED_TO_PARSE)
+            //    PG_RETURN_OID(service_oids[service_get(&parse_out)]);
         }
 
         if (parse_out.parse_state == STATE_ERROR)
             report_byte_format_error(&parse_out, hex_index);
     }
+
+    if (parse_out.service_type != TSERV_NEED_TO_PARSE)
+        PG_RETURN_OID(service_oids[service_get(&parse_out)]);
 
     ereport(
         ERROR,
@@ -8071,9 +9211,7 @@ telephone_service_get(PG_FUNCTION_ARGS)
 
 
 PG_FUNCTION_INFO_V1(telephone_fictitious_get);
-
-Datum
-telephone_fictitious_get(PG_FUNCTION_ARGS)
+Datum telephone_fictitious_get(PG_FUNCTION_ARGS)
 {
     bytea   *vlena          = PG_GETARG_BYTEA_P(0);
     char    *phone_hex      = VARDATA(vlena);
@@ -8085,10 +9223,11 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
     parse_out.parse_state       = STATE_CALLING_CODE_START;  // Only valid if !is_digits_only
     parse_out.digit_pos_next    = 0;
     parse_out.error_code        = ERROR_PARSE_STATE_OR_OTHER;
-    parse_out.service_type      = SERVICE_NEED_TO_PARSE;
+    parse_out.service_type      = TSERV_NEED_TO_PARSE;
     //memset(parse_out.digit_values, 0, sizeof(parse_out.digit_values));
     //memset(parse_out.digit_valuesmask, 0, sizeof(parse_out.digit_valuesmask));
     //memset(parse_out.digit_fields, 0, sizeof(parse_out.digit_fields));
+    parse_out.code_id = 0;
 
     is_digits_only = ((phone_hex[0] >> 4) & 0xF) == DIGIT_BIN_SPECIAL;
     if (is_digits_only)
@@ -8128,6 +9267,8 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
         if (parse_out.parse_state == STATE_ERROR)
             report_byte_format_error(&parse_out, hex_index);
     }
+
+    init_oids_fictitious();
 
     switch (calling_code_get(&parse_out)) {
         case 1:
@@ -8146,9 +9287,9 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                         parse_out.digit_values[ 8] == 1 &&
                         parse_out.digit_values[ 9] == 9 &&
                         parse_out.digit_values[10] == 9) {
-                        PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                        PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
                     } else {
-                        PG_RETURN_INT16(FICTITIOUS_REAL_MISTAKEN);
+                        PG_RETURN_OID(fictitious_oids[TFICT_REAL_MISTAKEN]);
                     }
                 }
             } else if (
@@ -8160,7 +9301,7 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                     parse_out.digit_values[4] == 5 &&
                     parse_out.digit_values[5] == 5 &&
                     parse_out.digit_values[6] == 5) {
-                    PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                    PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
                 }
             } else if (
                 parse_out.digit_values[1] == 6 &&
@@ -8170,7 +9311,7 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                     parse_out.digit_values[4] == 5 &&
                     parse_out.digit_values[5] == 5 &&
                     parse_out.digit_values[6] == 5) {
-                    PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                    PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
                 }
             } else if ( // All exchanges.
                 parse_out.digit_values[4] == 5 &&
@@ -8178,9 +9319,9 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                 parse_out.digit_values[6] == 5) {
                 if (parse_out.digit_values[7] == 0 &&
                     parse_out.digit_values[8] == 1) {
-                    PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                    PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
                 } else {
-                    PG_RETURN_INT16(FICTITIOUS_REAL_MISTAKEN);
+                    PG_RETURN_OID(fictitious_oids[TFICT_REAL_MISTAKEN]);
                 }
             } else if (
                 parse_out.digit_values[ 1] == 2 && // Munich, Scott Pilgrim vs. the World, The Adjustment Bureau, and
@@ -8193,7 +9334,7 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                 parse_out.digit_values[ 8] == 6 &&
                 parse_out.digit_values[ 9] == 6 &&
                 parse_out.digit_values[10] == 5) {
-                    PG_RETURN_INT16(FICTITIOUS_REAL_FICTITIOUS);
+                    PG_RETURN_OID(fictitious_oids[TFICT_REAL_FICTITIOUS]);
             } else if (
                 parse_out.digit_values[ 1] == 8 && // The Office
                 parse_out.digit_values[ 2] == 0 &&
@@ -8205,9 +9346,9 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                 parse_out.digit_values[ 8] == 6 &&
                 parse_out.digit_values[ 9] == 7 &&
                 parse_out.digit_values[10] == 2) {
-                    PG_RETURN_INT16(FICTITIOUS_REAL_FICTITIOUS);
+                    PG_RETURN_OID(fictitious_oids[TFICT_REAL_FICTITIOUS]);
             }
-            PG_RETURN_INT16(FICTITIOUS_REAL);
+            PG_RETURN_OID(fictitious_oids[TFICT_REAL]);
         break;
         case 44:
             if (parse_out.digit_pos_next < 10)
@@ -8221,9 +9362,9 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                 if (parse_out.digit_values[6] == 9 &&
                     parse_out.digit_values[7] == 6 &&
                     parse_out.digit_values[8] == 0) {
-                    PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                    PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
                 } else {
-                    PG_RETURN_INT16(FICTITIOUS_REAL_MISTAKEN);
+                    PG_RETURN_OID(fictitious_oids[TFICT_REAL_MISTAKEN]);
                 }
             } else if (
                 parse_out.digit_values[2] == 1 &&
@@ -8233,7 +9374,7 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                     parse_out.digit_values[6] == 9 &&
                     parse_out.digit_values[7] == 6 &&
                     parse_out.digit_values[8] == 0) {
-                    PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                    PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
                 }
             } else if (
                 parse_out.digit_values[2] == 1 &&
@@ -8243,7 +9384,7 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                     parse_out.digit_values[6] == 9 &&
                     parse_out.digit_values[7] == 6 &&
                     parse_out.digit_values[8] == 0) {
-                    PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                    PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
                 }
             } else if (
                 parse_out.digit_values[2] == 2 &&
@@ -8253,7 +9394,7 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                 parse_out.digit_values[6] == 4 &&
                 parse_out.digit_values[7] == 6 &&
                 parse_out.digit_values[8] == 0) {
-                PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
             } else if (
                 parse_out.digit_values[2] == 1 &&
                 parse_out.digit_values[3] == 9 &&
@@ -8262,7 +9403,7 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                 parse_out.digit_values[6] == 9 &&
                 parse_out.digit_values[7] == 8 &&
                 parse_out.digit_values[8] == 0) {
-                PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
             } else if (
                 parse_out.digit_values[2] == 2 &&
                 parse_out.digit_values[3] == 8 &&
@@ -8271,7 +9412,7 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                 parse_out.digit_values[6] == 1 &&
                 parse_out.digit_values[7] == 8 &&
                 parse_out.digit_values[8] == 0) {
-                PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
             } else if (
                 parse_out.digit_values[2] == 2 &&
                 parse_out.digit_values[3] == 9 &&
@@ -8280,7 +9421,7 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                 parse_out.digit_values[6] == 1 &&
                 parse_out.digit_values[7] == 8 &&
                 parse_out.digit_values[8] == 0) {
-                PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
             } else if (
                 parse_out.digit_values[2] == 7 &&
                 parse_out.digit_values[3] == 7 &&
@@ -8289,7 +9430,7 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                 parse_out.digit_values[6] == 9 &&
                 parse_out.digit_values[7] == 0 &&
                 parse_out.digit_values[8] == 0) {
-                PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
             } else if (
                 parse_out.digit_values[2] == 8 &&
                 parse_out.digit_values[3] == 0 &&
@@ -8298,7 +9439,7 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                 parse_out.digit_values[6] == 5 &&
                 parse_out.digit_values[7] == 7 &&
                 parse_out.digit_values[8] == 0) {
-                PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
             } else if (
                 parse_out.digit_values[2] == 9 &&
                 parse_out.digit_values[3] == 0 &&
@@ -8307,7 +9448,7 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                 parse_out.digit_values[6] == 7 &&
                 parse_out.digit_values[7] == 9 &&
                 parse_out.digit_values[8] == 0) {
-                PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
             } else if (
                 parse_out.digit_values[2] == 3 &&
                 parse_out.digit_values[3] == 0 &&
@@ -8316,168 +9457,268 @@ telephone_fictitious_get(PG_FUNCTION_ARGS)
                 parse_out.digit_values[6] == 9 &&
                 parse_out.digit_values[7] == 9 &&
                 parse_out.digit_values[8] == 0) {
-                PG_RETURN_INT16(FICTITIOUS_FICTITIOUS_RESERVED);
+                PG_RETURN_OID(fictitious_oids[TFICT_FICTITIOUS_RESERVED]);
             }
-            PG_RETURN_INT16(FICTITIOUS_REAL);
+            PG_RETURN_OID(fictitious_oids[TFICT_REAL]);
         break;
     }
 
     PG_RETURN_NULL();
 }
 
-/* QUESTIONABLE_SUBFIELD_API
-
-// This should be: extract(field from telephone) or telephone_part(text, telephone)
-
-// digits_format uses fields for spacing, but actual fields (like area codes and prefixes) can operate independently of spacing.
-// So this code is incorrect.  See Australia: 0A SSSS SSSS or 04NN NSS SSS (note that the N is split between groups)
-// Perhaps multiple overlapping layers of subfields should be provided.
-
-PG_FUNCTION_INFO_V1(telephone_field_count);
-
-Datum
-telephone_field_count(PG_FUNCTION_ARGS)
-{
-    bytea   *vlena      = PG_GETARG_BYTEA_P(0);
-    int     digit_index;
-    int     digit_field_prior = FIELD_INVALID;
-    int     field_count = 0;
-    struct parse_buffer parse_in;
-
-    if (mode_get(vlena) != 1)
-        return 1;
-
-    parse_in = telephone_bytea_to_parse_buffer(vlena);
-
-    for(digit_index = 0; digit_index < parse_in.digit_pos_next; ++digit_index) {
-        int digit_field = parse_in.digit_fields[digit_index];
-
-        if (digit_field != digit_field_prior) {
-            field_count++;
-            digit_field_prior = digit_field;
+static int get_digit_end_before_field(struct parse_buffer *parse_in, uint digit_field) {
+    int digit_index;
+    for(digit_index = 0; digit_index < parse_in->digit_pos_next; ++digit_index) {
+        if (parse_in->digit_fields[digit_index] == digit_field) {
+            return digit_index;
         }
     }
-    PG_RETURN_INT16(field_count);
+    return digit_index;
 }
 
-
-PG_FUNCTION_INFO_V1(telephone_field_text_get);
-
-Datum
-telephone_field_text_get(PG_FUNCTION_ARGS)
+static bytea * telephone_bytea_trim(bytea *value, int len)
 {
-    bytea   *vlena      = PG_GETARG_BYTEA_P(0);
-    int32   field_index = PG_GETARG_INT16(1);
-    int32   format_type = PG_GETARG_INT32(2);
-    //int     field_count = 0;
-    //int     digit_index;
-    //int     digit_field_prior = FIELD_INVALID;
-    char    *formatted_digits;
-    //int     text_index = 0;
-    struct parse_buffer parse_in;
+    int     new_char_len;
+    char    *old_chara          = VARDATA(value);
+    char    *new_chara;
+    int     remove_last_nibble  = 0;
+    bytea *result;
 
-    parse_in = telephone_bytea_to_parse_buffer(vlena);
-    formatted_digits = (char *) palloc(parse_in.digit_pos_next + 5 + additional_space_count(&parse_in));
-    digits_format(&parse_in, formatted_digits, format_type, field_index, 1, 1, 1, 1, 1, 1, 1);
-//     for(digit_index = 0; digit_index < parse_in.digit_pos_next; ++digit_index) {
-//         int digit_field = parse_in.digit_fields[digit_index];
-//
-//         if (digit_field != digit_field_prior) {
-//             field_count++;
-//
-//             if (field_count > field_index)
-//                 break;
-//
-//             digit_field_prior = digit_field;
-//         }
-//
-//         if (field_count == field_index) {
-//             formatted_digits[text_index++] = digit_value_to_text(parse_in.digit_values[digit_index],
-//                 parse_in.digit_valuesmask[digit_index] & VALUEPARTMASK_LETTER);
-//         }
-//     }
-//     formatted_digits[text_index++] = '\0';
-    PG_RETURN_TEXT_P(cstring_to_text(formatted_digits));
-}
-
-
-PG_FUNCTION_INFO_V1(telephone_field_name_get);
-
-Datum
-telephone_field_name_get(PG_FUNCTION_ARGS)
-{
-    bytea   *vlena      = PG_GETARG_BYTEA_P(0);
-    int32   field_index = PG_GETARG_INT16(1);
-    int     field_count = 0;
-    int     digit_index;
-    int     digit_field_prior = FIELD_INVALID;
-    struct parse_buffer parse_in;
-
-    parse_in = telephone_bytea_to_parse_buffer(vlena);
-    for(digit_index = 0; digit_index < parse_in.digit_pos_next; ++digit_index) {
-        int digit_field = parse_in.digit_fields[digit_index];
-
-        if (digit_field != digit_field_prior) {
-            field_count++;
-
-            digit_field_prior = digit_field;
+    if (mode_get(value) == TMODE_CALLING_CODE) {
+        new_char_len = len * .5;
+        if ((len & 1) == 1) {
+            remove_last_nibble = 1;
+            new_char_len++;
         }
+    } else {
+        new_char_len = (len + 1) * .5;
+        if ((len & 1) == 0) {
+            remove_last_nibble = 1;
+            new_char_len++;
+        }
+    }
 
-        if (field_count == field_index) {
-            switch (digit_field) {
-                case FIELD_CALLING_CODE:
-                    PG_RETURN_TEXT_P(cstring_to_text("calling_code"));
+    result = (bytea *) palloc(new_char_len + VARHDRSZ);
+    SET_VARSIZE(result, new_char_len + VARHDRSZ);
+    new_chara = VARDATA(result);
+    memcpy(new_chara, old_chara, new_char_len);
+
+    if (remove_last_nibble) {
+        new_chara[new_char_len - 1] = new_chara[new_char_len - 1] & 240;
+    }
+
+    return result;
+}
+
+static int get_number_of_digits(uint number) {
+    if (number < 10) return 1;
+    if (number < 100) return 2;
+    if (number < 1000) return 3;
+    if (number < 10000) return 4;
+    if (number < 100000) return 5;
+    if (number < 1000000) return 6;
+    if (number < 10000000) return 7;
+    if (number < 100000000) return 8;
+    if (number < 1000000000) return 9;
+    return 10;
+}
+
+/*static int find_first_non_number(struct parse_buffer *parse_in) {
+    uint digit_pos;
+    for (digit_pos = 0; digit_pos < parse_in->digit_pos_next; digit_pos++) {
+        if (parse_in->digit_values[digit_pos] < 0 || parse_in->digit_values[digit_pos] > 9)
+            return digit_pos;
+        if ((parse_in->digit_valuesmask[digit_pos] & VALUEMASK_CONFIRM) == VALUEMASK_CONFIRM)
+            return digit_pos + 1;
+        if (((parse_in->digit_valuesmask[digit_pos] >> VALUEBIT_PAUSE) & VALUEPARTMASK_PAUSE) > 0)
+            return digit_pos + 1;
+    }
+    return -1;
+}
+
+PG_FUNCTION_INFO_V1(telephone_number_only_part);
+Datum
+telephone_number_only_part(PG_FUNCTION_ARGS)
+{
+    bytea       *vlena              = PG_GETARG_BYTEA_P(0);
+    struct parse_buffer parse_in    = telephone_bytea_to_parse_buffer(vlena);
+    int         digit_pos           = find_first_non_number(&parse_in);
+
+    if (digit_pos == -1)
+        PG_RETURN_BYTEA_P(vlena);
+
+    PG_RETURN_BYTEA_P(telephone_bytea_trim(vlena, digit_pos));
+}*/
+
+PG_FUNCTION_INFO_V1(telephone_geo_parts_get);
+Datum telephone_geo_parts_get(PG_FUNCTION_ARGS)
+{
+    bytea       *vlena              = PG_GETARG_BYTEA_P(0);
+    bool        include_calling_code= PG_GETARG_BOOL(1);
+    bool        include_subscriber  = PG_GETARG_BOOL(2);
+    int         parts_count         = 0;
+    int         calling_code        = 0;
+    int         run_geo             = 1;
+    Datum       *part_elems;
+    ArrayType   *result;
+    struct parse_buffer parse_in    = telephone_bytea_to_parse_buffer(vlena);
+    int         part_lens[MAX_DIGITS];
+
+    if (mode_get(vlena) == TMODE_CALLING_CODE) {
+        calling_code = calling_code_get(&parse_in);
+
+        if (include_calling_code)
+            part_lens[parts_count++] = get_number_of_digits(calling_code);
+
+        run_geo = geo_is(&parse_in);
+    }
+
+    if (run_geo) {
+        switch (calling_code) {
+            case 1:
+                part_lens[parts_count++] = 4;
+                part_lens[parts_count++] = 7;
                 break;
-                case FIELD_NANP_NPAC:
-                case FIELD_FINLAND_AREA_CODE:
-                case FIELD_UK_AREA_CODE:
-                case FIELD_AUSTRALIA_AREA_CODE: // 4nn is a mobile prefix, not an "area code"
-                case FIELD_RUSSIA_AREA_CODE:
-                case FIELD_JAPAN_AREA_CODE:
-                case FIELD_INDIA_AREA_CODE:
-                    PG_RETURN_TEXT_P(cstring_to_text("area_code"));
+            case 33:
+                part_lens[parts_count++] = get_digit_end_before_field(&parse_in, FIELD_FRANCE_SUB);
                 break;
-                case FIELD_NANP_COC:
-                case FIELD_RUSSIA_ZONE_CODE:
-                    PG_RETURN_TEXT_P(cstring_to_text("prefix"));
+            case 39:
+                part_lens[parts_count++] = get_digit_end_before_field(&parse_in, FIELD_ITALY_SUB1);
                 break;
-                case FIELD_NANP_SUB:
-                case FIELD_FINLAND_SUB1:
-                case FIELD_UK_SUB1:
-                case FIELD_AUSTRALIA_SUB1:
-                case FIELD_RUSSIA_SUB1:
-                case FIELD_JAPAN_SUB1:
-                case FIELD_INDIA_SUB1:
-                    PG_RETURN_TEXT_P(cstring_to_text("subscriber"));
+            case 44:
+                part_lens[parts_count++] = get_digit_end_before_field(&parse_in, FIELD_UK_SUB1);
                 break;
-                case FIELD_FINLAND_SUB2:
-                case FIELD_UK_SUB2:
-                case FIELD_AUSTRALIA_SUB2:
-                case FIELD_RUSSIA_SUB2:
-                case FIELD_JAPAN_SUB2:
-                case FIELD_INDIA_SUB2:
-                    PG_RETURN_TEXT_P(cstring_to_text("subscriber2"));
+            case 61:
+                part_lens[parts_count++] = 3; // FIELD_AUSTRALIA_SUB1
                 break;
-                case FIELD_FINLAND_SUB3:
-                    PG_RETURN_TEXT_P(cstring_to_text("subscriber3"));
+            case 7:
+                part_lens[parts_count++] = 4;
                 break;
-                case FIELD_EXTENSION:
-                    PG_RETURN_TEXT_P(cstring_to_text("extension"));
+            case 81:
+                {
+                    int get_sub_1 = get_digit_end_before_field(&parse_in, FIELD_JAPAN_SUB1);
+                    int get_sub_2 = get_digit_end_before_field(&parse_in, FIELD_JAPAN_SUB2);
+                    if (get_sub_1 > get_sub_2)
+                        get_sub_1 = get_sub_2; // Larger areas begin with SUB2.
+
+                    part_lens[parts_count++] = get_sub_1;
+                }
                 break;
-                case FIELD_DIGITS:
-                    PG_RETURN_TEXT_P(cstring_to_text("digits"));
+            case 91:
+                part_lens[parts_count++] = get_digit_end_before_field(&parse_in, FIELD_INDIA_SUB1);
                 break;
-                default:
-                    PG_RETURN_TEXT_P(cstring_to_text("unknown"));
+            default:
+                {
+                    int digit_pos;
+                    int digit_start = 1;
+                    int digit_end = parse_in.digit_pos_next;
+
+                    if (include_calling_code)
+                        digit_start = 0;
+
+                    if (!include_subscriber)
+                        digit_end--;
+
+                    for (digit_pos = digit_start; digit_pos < digit_end; digit_pos++ ) {
+                        if (parse_in.digit_values[digit_pos] < 0 || parse_in.digit_values[digit_pos] > 9)
+                            break;
+                        part_lens[parts_count++] = digit_pos + 1;
+                        if ((parse_in.digit_valuesmask[digit_pos] & VALUEMASK_CONFIRM) == VALUEMASK_CONFIRM)
+                            break;
+                        if (((parse_in.digit_valuesmask[digit_pos] >> VALUEBIT_PAUSE) & VALUEPARTMASK_PAUSE) > 0)
+                            break;
+                    }
+                }
+        }
+    }
+
+    if (calling_code != 0 && include_subscriber)
+        part_lens[parts_count++] = get_digit_end_before_field(&parse_in, FIELD_EXTENSION);
+
+    if (parse_in.digit_pos_next == 0) {
+        parts_count = 0;
+    }
+
+    part_elems       = (Datum*)palloc(parts_count * sizeof(Datum));
+    {
+        int part_index = 0;
+        for (; part_index < parts_count; part_index++ ) {
+            part_elems[part_index] = (Datum)telephone_bytea_trim(vlena, part_lens[part_index]);
+            //telephone_parse_buffer_to_bytea(&parse_in, 0, part_lens[part_index], 0);
+        }
+    }
+
+    //init_typlen_text();
+    init_typlen_telephone();
+    //result = construct_array(part_elems, parts_count, TEXTOID, typlen_text, typlen_text_typbyval, typlen_text_typalign);
+    result = construct_array(part_elems, parts_count, typlen_telephone_oid, typlen_telephone, typlen_telephone_typbyval,
+                             typlen_telephone_typalign);
+
+    PG_RETURN_ARRAYTYPE_P(result);
+}
+
+PG_FUNCTION_INFO_V1(telephone_ident_bytes_get);
+Datum telephone_ident_bytes_get(PG_FUNCTION_ARGS)
+{
+    bytea   *vlena          = PG_GETARG_BYTEA_P(0);
+    char    *phone_hex      = VARDATA(vlena);
+    int     in_hex_len      = VARSIZE(vlena) - VARHDRSZ;
+    int     is_letter_mask;
+    char    out_hex[MAX_DIGITS];
+    int     out_hex_index   = 0;
+    char   *bytea_data;
+    bytea  *result;
+
+    is_letter_mask = phone_hex[in_hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
+
+    if (is_letter_mask)
+        in_hex_len = in_hex_len / 3; // Remove letter mask from digits hex len.
+
+    {
+        int last_in_hex_index = in_hex_len - 1;
+        int in_hex_index;
+        char out_nibbles;
+        int out_on_nibble2 = 0;
+        for(in_hex_index = 0; in_hex_index < in_hex_len; ++in_hex_index) {
+            int in_hex_value = phone_hex[in_hex_index];
+            int in_nibble_1 = ((in_hex_value >> 4) & 0xF) + DIGIT_BIN_OFFSET;
+            int in_nibble_2 = (in_hex_value & 0xF) + DIGIT_BIN_OFFSET;
+
+            // Do not read the digits qualifier
+            if (in_nibble_1 >= 0) {
+                if (out_on_nibble2) {
+                    out_nibbles = out_nibbles | in_nibble_1;
+                    out_hex[out_hex_index++] = out_nibbles;
+                    out_on_nibble2 = 0;
+                } else {
+                    out_nibbles = in_nibble_1 << 4;
+                    out_on_nibble2 = 1;
+                }
+            }
+
+            // Do not read the filler nibble.
+            if (in_hex_index == last_in_hex_index && in_nibble_2 == DIGIT_SPECIAL)
                 break;
+
+            if (in_nibble_2 >= 0) {
+                if (out_on_nibble2) {
+                    out_nibbles = out_nibbles | in_nibble_2;
+                    out_hex[out_hex_index++] = out_nibbles;
+                    out_on_nibble2 = 0;
+                } else {
+                    out_nibbles = in_nibble_2 << 4;
+                    out_on_nibble2 = 1;
+                }
             }
         }
+
+        if (out_on_nibble2)
+            out_hex[out_hex_index++] = out_nibbles | 15;
     }
 
-    //if (field_index > field_count)
-        ereport(ERROR, (
-            errmsg("The field index %d does not exist in this telephone number.  The number of fields is %d.", field_index,
-                field_count),
-            errhint("Only use a field index equal to or lower than the field count.")));
+    result = palloc(out_hex_index + VARHDRSZ);
+    bytea_data = VARDATA(result);
+    memcpy(bytea_data, out_hex, out_hex_index);
+    SET_VARSIZE(result, out_hex_index + VARHDRSZ);
+    PG_RETURN_BYTEA_P(result);
 }
-QUESTIONABLE_SUBFIELD_API */

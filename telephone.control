@@ -2,3 +2,4 @@
 comment = 'Telephone digits and international telephone number validation'
 default_version = '0.0.1'
 relocatable = true
+requires = plpgsql

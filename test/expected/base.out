@@ -9,11 +9,17 @@ INSERT INTO telephones(telephone) VALUES('1/1');
 INSERT INTO telephones(telephone) VALUES('1,2');
 INSERT INTO telephones(telephone) VALUES('1;3');;
 INSERT INTO telephones(telephone) VALUES('10000003');
-INSERT INTO telephones(telephone) VALUES('20000002');
 INSERT INTO telephones(telephone) VALUES('30000001');
-INSERT INTO telephones(telephone) VALUES('1000003');
+INSERT INTO telephones(telephone) VALUES('20000002');
 INSERT INTO telephones(telephone) VALUES('2000002');
+INSERT INTO telephones(telephone) VALUES('1000003');
 INSERT INTO telephones(telephone) VALUES('3000001');
+INSERT INTO telephones(telephone) VALUES('520002');
+INSERT INTO telephones(telephone) VALUES('51000003');
+INSERT INTO telephones(telephone) VALUES('5300001');
+INSERT INTO telephones(telephone) VALUES('41000034');
+INSERT INTO telephones(telephone) VALUES('43000014');
+INSERT INTO telephones(telephone) VALUES('42000024');
 INSERT INTO telephones(telephone) VALUES('80000003');
 INSERT INTO telephones(telephone) VALUES('80000002');
 INSERT INTO telephones(telephone) VALUES('80000001');
@@ -36,40 +42,46 @@ INSERT INTO telephones(telephone) VALUES('########');
 SELECT * FROM telephones ORDER BY telephone;
  id |         telephone          
 ----+----------------------------
- 32 | 
+ 38 | 
   6 | 1/1
+  9 | 10000003
+ 13 | 1000003
   3 | 1 1
   7 | 1,2
-  8 | 1;3
-  4 | 2,2
-  5 | 2;3
- 22 | 4/1
- 21 | 4 1
- 23 | 4;2
- 24 | 4,3
- 25 | 5/1
- 26 | 5;1
- 27 | 5,,2
- 29 | 6;6
- 28 | 6,/,6
- 31 | 7;7
- 30 | 7,/,7
- 12 | 1000003
- 13 | 2000002
- 14 | 3000001
- 20 | 8000001
- 19 | 8000002
- 18 | 8000003
-  9 | 10000003
- 10 | 20000002
- 11 | 30000001
- 17 | 80000001
- 16 | 80000002
- 15 | 80000003
- 33 | ########
   1 | 123456789*#
+  8 | 1;3
+ 11 | 20000002
+ 12 | 2000002
+  4 | 2,2
   2 | ABCDEFGHIJKLMNOPQRSTUVWXYZ
-(33 rows)
+  5 | 2;3
+ 10 | 30000001
+ 14 | 3000001
+ 28 | 4/1
+ 27 | 4 1
+ 18 | 41000034
+ 29 | 4;2
+ 20 | 42000024
+ 30 | 4,3
+ 19 | 43000014
+ 31 | 5/1
+ 32 | 5;1
+ 16 | 51000003
+ 33 | 5,,2
+ 15 | 520002
+ 17 | 5300001
+ 34 | 6,/,6
+ 35 | 6;6
+ 36 | 7,/,7
+ 37 | 7;7
+ 23 | 80000001
+ 22 | 80000002
+ 21 | 80000003
+ 26 | 8000001
+ 25 | 8000002
+ 24 | 8000003
+ 39 | ########
+(39 rows)
 
 SELECT MIN(telephone) AS min FROM telephones;
  min 
@@ -78,9 +90,9 @@ SELECT MIN(telephone) AS min FROM telephones;
 (1 row)
 
 SELECT MAX(telephone) AS max FROM telephones;
-            max             
-----------------------------
- ABCDEFGHIJKLMNOPQRSTUVWXYZ
+   max    
+----------
+ ########
 (1 row)
 
 -- index scan
@@ -89,24 +101,24 @@ INSERT INTO telephones(telephone) SELECT '4'||id FROM generate_series(5678, 8000
 SELECT id,telephone::text FROM telephones WHERE telephone = '48000';
   id  | telephone 
 ------+-----------
- 2356 | 48000
+ 2362 | 48000
 (1 row)
 
 SET enable_seqscan = false;
 SELECT id,telephone::text FROM telephones WHERE telephone = '46000';
  id  | telephone 
 -----+-----------
- 356 | 46000
+ 362 | 46000
 (1 row)
 
 SELECT id,telephone FROM telephones WHERE telephone >= '47000' LIMIT 5;
   id  | telephone 
 ------+-----------
- 1356 | 47000
- 1357 | 47001
- 1358 | 47002
- 1359 | 47003
- 1360 | 47004
+ 1362 | 47000
+ 1363 | 47001
+ 1364 | 47002
+ 1365 | 47003
+ 1366 | 47004
 (5 rows)
 
 SELECT count(id) FROM telephones;
@@ -199,8 +211,8 @@ SELECT '0'::telephone = '1'::telephone;
 TRUNCATE telephones;
 COPY telephones(telephone) FROM STDIN;
 COPY telephones TO STDOUT;
-2357	
-2358	########
+2363	
+2364	########
 -- clean up --
 DROP TABLE telephones;
 -- errors
@@ -225,42 +237,42 @@ LINE 1: SELECT '0000000001111111111222222222233333333334444444444555...
                ^
 HINT:  Only store actual telephone numbers and extensions.
 -- calling code mode
-SELECT  telephone_to_string(telephone => '+1 800 555 0199 x 1E 3,4;5'::telephone, format_type => 190, calling_code => TRUE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => TRUE, letters => TRUE, pause_confirm => TRUE, allow_digits_mode => TRUE),
-        telephone_to_string(telephone => '+44 1632 960123 x 1E 3,4;5'::telephone, format_type => 190, calling_code => TRUE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => TRUE, letters => TRUE, pause_confirm => TRUE, allow_digits_mode => TRUE),
-        telephone_to_string(telephone => '+61 2 5550 0123 x 1E 3,4;5'::telephone, format_type => 190, calling_code => TRUE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => TRUE, letters => TRUE, pause_confirm => TRUE, allow_digits_mode => TRUE);
-    telephone_to_string    |    telephone_to_string    |    telephone_to_string    
+SELECT  telephone_to_format(telephone => '+1 800 555 0199 x 1E 3,4;5'::telephone, format_type => 'international'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{}', letters => TRUE, pause_confirm => TRUE, allow_digits_mode => TRUE),
+        telephone_to_format(telephone => '+44 1632 960123 x 1E 3,4;5'::telephone, format_type => 'international'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{}', letters => TRUE, pause_confirm => TRUE, allow_digits_mode => TRUE),
+        telephone_to_format(telephone => '+61 2 5550 0123 x 1E 3,4;5'::telephone, format_type => 'international'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{}', letters => TRUE, pause_confirm => TRUE, allow_digits_mode => TRUE);
+    telephone_to_format    |    telephone_to_format    |    telephone_to_format    
 ---------------------------+---------------------------+---------------------------
  +1 800 555 0199 x1E 3,4;5 | +44 1632 960123 x1E 3,4;5 | +61 2 5550 0123 x1E 3,4;5
 (1 row)
 
-SELECT  telephone_to_string(telephone => '+1 800 555 0199 x 1E 3,4;5'::telephone, format_type => 191, calling_code => FALSE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => TRUE, letters => TRUE, pause_confirm => TRUE, allow_digits_mode => TRUE),
-        telephone_to_string(telephone => '+44 1632 960123 x 1E 3,4;5'::telephone, format_type => 191, calling_code => FALSE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => TRUE, letters => TRUE, pause_confirm => TRUE, allow_digits_mode => TRUE),
-        telephone_to_string(telephone => '+61 2 5550 0123 x 1E 3,4;5'::telephone, format_type => 191, calling_code => FALSE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => TRUE, letters => TRUE, pause_confirm => TRUE, allow_digits_mode => TRUE);
-   telephone_to_string    |   telephone_to_string    |   telephone_to_string    
+SELECT  telephone_to_format(telephone => '+1 800 555 0199 x 1E 3,4;5'::telephone, format_type => 'domestic'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{calling_code}', letters => TRUE, pause_confirm => TRUE, allow_digits_mode => TRUE),
+        telephone_to_format(telephone => '+44 1632 960123 x 1E 3,4;5'::telephone, format_type => 'domestic'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{calling_code}', letters => TRUE, pause_confirm => TRUE, allow_digits_mode => TRUE),
+        telephone_to_format(telephone => '+61 2 5550 0123 x 1E 3,4;5'::telephone, format_type => 'domestic'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{calling_code}', letters => TRUE, pause_confirm => TRUE, allow_digits_mode => TRUE);
+   telephone_to_format    |   telephone_to_format    |   telephone_to_format    
 --------------------------+--------------------------+--------------------------
  (800) 555-0199 x1E 3,4;5 | (01632) 960123 x1E 3,4;5 | (02) 5550 0123 x1E 3,4;5
 (1 row)
 
-SELECT  telephone_to_string(telephone => '+1 800 555 0199 x 1E 3,4;5'::telephone, format_type => 192, calling_code => TRUE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => TRUE, letters => FALSE, pause_confirm => TRUE, allow_digits_mode => TRUE),
-        telephone_to_string(telephone => '+44 1632 960123 x 1E 3,4;5'::telephone, format_type => 192, calling_code => TRUE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => TRUE, letters => FALSE, pause_confirm => TRUE, allow_digits_mode => TRUE),
-        telephone_to_string(telephone => '+61 2 5550 0123 x 1E 3,4;5'::telephone, format_type => 192, calling_code => TRUE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => TRUE, letters => FALSE, pause_confirm => TRUE, allow_digits_mode => TRUE);
- telephone_to_string | telephone_to_string  | telephone_to_string 
+SELECT  telephone_to_format(telephone => '+1 800 555 0199 x 1E 3,4;5'::telephone, format_type => 'digits_only'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{}', letters => FALSE, pause_confirm => TRUE, allow_digits_mode => TRUE),
+        telephone_to_format(telephone => '+44 1632 960123 x 1E 3,4;5'::telephone, format_type => 'digits_only'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{}', letters => FALSE, pause_confirm => TRUE, allow_digits_mode => TRUE),
+        telephone_to_format(telephone => '+61 2 5550 0123 x 1E 3,4;5'::telephone, format_type => 'digits_only'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{}', letters => FALSE, pause_confirm => TRUE, allow_digits_mode => TRUE);
+ telephone_to_format | telephone_to_format  | telephone_to_format 
 ---------------------+----------------------+---------------------
  18005550199;133,4;5 | 441632960123;133,4;5 | 61255500123;133,4;5
 (1 row)
 
-SELECT  telephone_to_string(telephone => '+1 800 555 0199 x 1E 3,4;5'::telephone, format_type => 192, calling_code => FALSE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => TRUE, letters => FALSE, pause_confirm => FALSE, allow_digits_mode => TRUE),
-        telephone_to_string(telephone => '+44 1632 960123 x 1E 3,4;5'::telephone, format_type => 192, calling_code => FALSE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => TRUE, letters => FALSE, pause_confirm => FALSE, allow_digits_mode => TRUE),
-        telephone_to_string(telephone => '+61 2 5550 0123 x 1E 3,4;5'::telephone, format_type => 192, calling_code => FALSE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => TRUE, letters => FALSE, pause_confirm => FALSE, allow_digits_mode => TRUE);
- telephone_to_string | telephone_to_string | telephone_to_string 
+SELECT  telephone_to_format(telephone => '+1 800 555 0199 x 1E 3,4;5'::telephone, format_type => 'digits_only'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{calling_code}', letters => FALSE, pause_confirm => FALSE, allow_digits_mode => TRUE),
+        telephone_to_format(telephone => '+44 1632 960123 x 1E 3,4;5'::telephone, format_type => 'digits_only'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{calling_code}', letters => FALSE, pause_confirm => FALSE, allow_digits_mode => TRUE),
+        telephone_to_format(telephone => '+61 2 5550 0123 x 1E 3,4;5'::telephone, format_type => 'digits_only'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{calling_code}', letters => FALSE, pause_confirm => FALSE, allow_digits_mode => TRUE);
+ telephone_to_format | telephone_to_format | telephone_to_format 
 ---------------------+---------------------+---------------------
  800555019913345     | 163296012313345     | 25550012313345
 (1 row)
 
-SELECT  telephone_to_string(telephone => '+1 800 555 0199 x 1E 3,4;5'::telephone, format_type => 192, calling_code => FALSE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => FALSE, letters => FALSE, pause_confirm => FALSE, allow_digits_mode => TRUE),
-        telephone_to_string(telephone => '+44 1632 960123 x 1E 3,4;5'::telephone, format_type => 192, calling_code => FALSE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => FALSE, letters => FALSE, pause_confirm => FALSE, allow_digits_mode => TRUE),
-        telephone_to_string(telephone => '+61 2 5550 0123 x 1E 3,4;5'::telephone, format_type => 192, calling_code => FALSE, area_code => TRUE, prefix => TRUE, subscriber => TRUE, extension => FALSE, letters => FALSE, pause_confirm => FALSE, allow_digits_mode => TRUE);
- telephone_to_string | telephone_to_string | telephone_to_string 
+SELECT  telephone_to_format(telephone => '+1 800 555 0199 x 1E 3,4;5'::telephone, format_type => 'digits_only'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{calling_code,extension}', letters => FALSE, pause_confirm => FALSE, allow_digits_mode => TRUE),
+        telephone_to_format(telephone => '+44 1632 960123 x 1E 3,4;5'::telephone, format_type => 'digits_only'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{calling_code,extension}', letters => FALSE, pause_confirm => FALSE, allow_digits_mode => TRUE),
+        telephone_to_format(telephone => '+61 2 5550 0123 x 1E 3,4;5'::telephone, format_type => 'digits_only'::public.telephone_format, inclusive_subfields => FALSE, subfields => '{calling_code,extension}', letters => FALSE, pause_confirm => FALSE, allow_digits_mode => TRUE);
+ telephone_to_format | telephone_to_format | telephone_to_format 
 ---------------------+---------------------+---------------------
  8005550199          | 1632960123          | 255500123
 (1 row)
@@ -269,7 +281,7 @@ SELECT  telephone_mode_get('+1 800 555 0199 x 1E 3,4;5'::telephone),
         telephone_mode_get('1 800 555 0199 ; 1E 3,4;5'::telephone);
  telephone_mode_get | telephone_mode_get 
 --------------------+--------------------
-                  1 |                  2
+ calling_code       | digits
 (1 row)
 
 SELECT  telephone_calling_code_get('+1 800 555 0199 x 1E 3,4;5'::telephone),
@@ -283,20 +295,20 @@ SELECT  telephone_service_get('+1 800 555 0199 x 1E 3,4;5'::telephone),
         telephone_service_get('1 800 555 0199 ; 1E 3,4;5'::telephone);
  telephone_service_get | telephone_service_get 
 -----------------------+-----------------------
-                   104 |                      
+ tollfree              | 
 (1 row)
 
 SELECT  telephone_fictitious_get('+1 800 555 0199 x 1E 3,4;5'::telephone),
         telephone_fictitious_get('1 800 555 0199 ; 1E 3,4;5'::telephone);
  telephone_fictitious_get | telephone_fictitious_get 
 --------------------------+--------------------------
-                      189 |                         
+ fictitious_reserved      | 
 (1 row)
 
 SELECT  telephone_fictitious_get('+44 1632 960000 21'::telephone);
  telephone_fictitious_get 
 --------------------------
-                      189
+ fictitious_reserved
 (1 row)
 
 SELECT  telephone_fictitious_get('+44 113 496 0000 21'::telephone),
@@ -307,7 +319,7 @@ SELECT  telephone_fictitious_get('+44 113 496 0000 21'::telephone),
         telephone_fictitious_get('+44 29 2018 0000 21'::telephone);
  telephone_fictitious_get | telephone_fictitious_get | telephone_fictitious_get | telephone_fictitious_get | telephone_fictitious_get | telephone_fictitious_get 
 --------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------
-                      189 |                      189 |                      189 |                      189 |                      189 |                      189
+ fictitious_reserved      | fictitious_reserved      | fictitious_reserved      | fictitious_reserved      | fictitious_reserved      | fictitious_reserved
 (1 row)
 
 SELECT  telephone_fictitious_get('+44 7700 900000 21'::telephone),
@@ -316,7 +328,7 @@ SELECT  telephone_fictitious_get('+44 7700 900000 21'::telephone),
         telephone_fictitious_get('+44 306 999 0000 21'::telephone);
  telephone_fictitious_get | telephone_fictitious_get | telephone_fictitious_get | telephone_fictitious_get 
 --------------------------+--------------------------+--------------------------+--------------------------
-                      189 |                      189 |                      189 |                      189
+ fictitious_reserved      | fictitious_reserved      | fictitious_reserved      | fictitious_reserved
 (1 row)
 
 SELECT  telephone_fictitious_is('+1 201 555 0199 x 1E 3,4;5'::telephone),
@@ -352,6 +364,20 @@ SELECT  telephone_domestic_numbers_get('800 555 019'::telephone, 1, 10),
  telephone_domestic_numbers_get | telephone_domestic_numbers_get 
 --------------------------------+--------------------------------
                                 | 
+(1 row)
+
+SELECT  telephone_domestic_numbers_get('800 555 01A9 ; 43,21'::telephone, 1),
+        telephone_domestic_numbers_get('800 555 01A9'::telephone, 1);
+ telephone_domestic_numbers_get | telephone_domestic_numbers_get 
+--------------------------------+--------------------------------
+ 8005550129                     | 8005550129
+(1 row)
+
+SELECT  telephone_extension_numbers_get('800 555 01A9 ; 43,21'::telephone),
+        telephone_extension_numbers_get('800 555 01A9'::telephone);
+ telephone_extension_numbers_get | telephone_extension_numbers_get 
+---------------------------------+---------------------------------
+ 4321                            | 
 (1 row)
 
 SELECT  telephone_domestic_prefer_get('+1 800 555 0199 x 1E 3,4;5'::telephone, 1),
@@ -397,34 +423,82 @@ SELECT  telephone_set('+1 800 555 0199 x 1E 3,4;5'),
  +1 800 555 0199 x1E 3,4;5 | 1 000 555 0199;1E 3,4;5 | 800 555 0199;1E 3,4;5
 (1 row)
 
-SELECT  telephone_number_only('1 (800) 555-01AZ'::telephone);
- telephone_number_only 
------------------------
- 18005550129
+SELECT '+1 800 555 019^'::telephone;
+    telephone    
+-----------------
+ +1 800 555 019^
 (1 row)
 
-/* QUESTIONABLE_FIELD_API
+SELECT  telephone_geo_parts_get('+1 510 555 0199 x 1E 1,4;5'::telephone, true, true),
+        telephone_geo_parts_get('+1 510 555 0199 x 1E 1,4;5'::telephone, false, false);
+             telephone_geo_parts_get             |  telephone_geo_parts_get  
+-------------------------------------------------+---------------------------
+ {+1^,"+1 510^","+1 510 555^","+1 510 555 0199"} | {"+1 510^","+1 510 555^"}
+(1 row)
 
-SELECT  telephone_field_count('+1 800 555 0199 x 1E 3,4;5'::telephone),
-        telephone_field_count('1 800 555 0199 ; 1E 3,4;5'::telephone);
+SELECT  telephone_geo_parts_get('+1 510 555 0199'::telephone, true, true),
+        telephone_geo_parts_get('+1 510 555 0199'::telephone, false, false);
+             telephone_geo_parts_get             |  telephone_geo_parts_get  
+-------------------------------------------------+---------------------------
+ {+1^,"+1 510^","+1 510 555^","+1 510 555 0199"} | {"+1 510^","+1 510 555^"}
+(1 row)
 
-SELECT  '<' || telephone_field_text_get('+1 800 555 0199 x 1E 3,4;5'::telephone, 1, 191) || '>' AS cc_1,
-        '<' || telephone_field_text_get('+1 800 555 0199 x 1E 3,4;5'::telephone, 2, 191) || '>' AS cc_2,
-        '<' || telephone_field_text_get('+1 800 555 0199 x 1E 3,4;5'::telephone, 3, 191) || '>' AS cc_3,
-        '<' || telephone_field_text_get('+1 800 555 0199 x 1E 3,4;5'::telephone, 4, 191) || '>' AS cc_4,
-        '<' || telephone_field_text_get('+1 800 555 0199 x 1E 3,4;5'::telephone, 5, 191) || '>' AS cc_5,
-        '<' || telephone_field_text_get('+1 800 555 0199 x 1E 3,4;5'::telephone, 2, 193) || '>' AS cc_d_2,
-        telephone_field_text_get('1 800 555 0199 ; 1E 3,4;5'::telephone, 1, 190);
+SELECT  telephone_geo_parts_get('+1 800 555 0199'::telephone, true, true),
+        telephone_geo_parts_get('+1 800 555 0199'::telephone, false, false);
+ telephone_geo_parts_get | telephone_geo_parts_get 
+-------------------------+-------------------------
+ {+1^,"+1 800 555 0199"} | {}
+(1 row)
 
-SELECT  telephone_field_name_get('+1 800 555 0199 x 1E 3,4;5'::telephone, 1) AS cc_1,
-        telephone_field_name_get('+1 800 555 0199 x 1E 3,4;5'::telephone, 2) AS cc_2,
-        telephone_field_name_get('+1 800 555 0199 x 1E 3,4;5'::telephone, 3) AS cc_3,
-        telephone_field_name_get('+1 800 555 0199 x 1E 3,4;5'::telephone, 4) AS cc_4,
-        telephone_field_name_get('+1 800 555 0199 x 1E 3,4;5'::telephone, 5) AS cc_5,
-        telephone_field_name_get('1 800 555 0199 ; 1E 3,4;5'::telephone, 1);
+SELECT  telephone_geo_is('+1 800 555 0199'::telephone),
+        telephone_geo_is('+1 510 555 0199'::telephone);
+ telephone_geo_is | telephone_geo_is 
+------------------+------------------
+ f                | t
+(1 row)
 
-SELECT  telephone_field_text_get('+1 800 555 0199 x 1E 3,4;5'::telephone, 6, 191);
+SELECT  telephone_geo_parts_get('1234'::telephone, false, false),
+        telephone_geo_parts_get('12345'::telephone, false, false);
+ telephone_geo_parts_get | telephone_geo_parts_get 
+-------------------------+-------------------------
+ {12,123}                | {12,123,1234}
+(1 row)
 
-SELECT  telephone_field_name_get('+1 800 555 0199 x 1E 3,4;5'::telephone, 6);
+SELECT  telephone_geo_parts_get('1234'::telephone, true, false),
+        telephone_geo_parts_get('12345'::telephone, false, true),
+        telephone_geo_parts_get('12345'::telephone, true, true);
+ telephone_geo_parts_get | telephone_geo_parts_get | telephone_geo_parts_get 
+-------------------------+-------------------------+-------------------------
+ {1,12,123}              | {12,123,1234,12345}     | {1,12,123,1234,12345}
+(1 row)
 
-QUESTIONABLE_FIELD_API */
+SELECT  telephone_geo_parts_get('1234;321'::telephone, false, false),
+        telephone_geo_parts_get('12345;321'::telephone, false, false);
+ telephone_geo_parts_get | telephone_geo_parts_get 
+-------------------------+-------------------------
+ {12,123,1234}           | {12,123,1234,12345}
+(1 row)
+
+SELECT  telephone_geo_parts_get('1234,21'::telephone, false, false),
+        telephone_geo_parts_get('12345,321'::telephone, false, false);
+ telephone_geo_parts_get | telephone_geo_parts_get 
+-------------------------+-------------------------
+ {12,123,1234}           | {12,123,1234,12345}
+(1 row)
+
+CREATE CAST (bytea       AS telephone)   WITHOUT FUNCTION AS ASSIGNMENT;
+CREATE CAST (telephone   AS bytea)       WITHOUT FUNCTION;
+SELECT '\x599999999990'::bytea::telephone;
+  telephone  
+-------------
+ 15555555555
+(1 row)
+
+/* QUESTIONABLE_BYTEA_API
+
+SELECT  telephone_ident_bytes_get('+1 201 555 0199 x 1E 3,4;56'::telephone),
+        telephone_ident_bytes_get('1 201 555 0199 ; 1E 3,4;56'::telephone),
+        telephone_ident_bytes_get('1'::telephone),
+        telephone_ident_bytes_get('10'::telephone);
+
+QUESTIONABLE_BYTEA_API */
