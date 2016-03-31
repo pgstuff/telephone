@@ -1,6 +1,4 @@
-\set ECHO none
-\i sql/telephone.sql
-\set ECHO all
+CREATE EXTENSION telephone;
 
 CREATE TABLE telephones(id serial primary key, telephone telephone unique);
 INSERT INTO telephones(telephone) VALUES('123456789*#');

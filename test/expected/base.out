@@ -1,4 +1,4 @@
-\set ECHO none
+CREATE EXTENSION telephone;
 CREATE TABLE telephones(id serial primary key, telephone telephone unique);
 INSERT INTO telephones(telephone) VALUES('123456789*#');
 INSERT INTO telephones(telephone) VALUES('ABCDEFGHIJKLMNOPQRSTUVWXYZ');
@@ -225,7 +225,7 @@ SELECT '+1 800 555 019'::telephone;
 ERROR:  The telephone number is not complete.  The text is "+1 800 555 019".
 LINE 1: SELECT '+1 800 555 019'::telephone;
                ^
-HINT:  Add the missing digits or use the digits format to store this telephone number by removing the +.
+HINT:  Add the missing digits or use the digits mode to store this telephone number by removing the +.
 SELECT '+1 80 0 555 0199'::telephone;
 ERROR:  The character " " is not valid in this part of a telephone number.  The full text is "+1 80 0 555 0199" and the position of the invalid character is 6.  The error type is 205 and the error ID is 5.
 LINE 1: SELECT '+1 80 0 555 0199'::telephone;

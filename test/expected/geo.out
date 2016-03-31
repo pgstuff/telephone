@@ -1,5 +1,3 @@
-CREATE EXTENSION telephone;
-ERROR:  type "telephone" already exists
 CREATE TABLE telephone_geo_numbers (
     phone_prefix telephone PRIMARY KEY,
     area_name text

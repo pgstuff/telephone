@@ -145,9 +145,9 @@ PG_MODULE_MAGIC;
 
 #define DIGIT_BIN_OFFSET                -4
 #define DIGIT_BIN_SPECIAL               0
-#define DIGIT_BIN_HEX_SPECIAL_SPECIAL   '\x00' // Used for letter mask indicator.
-#define DIGIT_SPECIAL   -4 // Multiple meanings:  Start: Digits format, Middle: Whitespace, End: Letter mask
-#define DIGIT_SLASH     -3 // Indicates alternative numbers.  Only valid in digits format or in the extension.
+#define DIGIT_BIN_HEX_SPECIAL_SPECIAL   '\x00' // Used for mask indicator.
+#define DIGIT_SPECIAL   -4 // Multiple meanings:  Start: Digits mode, Middle: Whitespace, End: Letter mask
+#define DIGIT_SLASH     -3 // Indicates alternative numbers.  Only valid in digits mode or in the extension.
 #define DIGIT_CONFIRM   -2 // Prompt (confirmation pause) using ";"  Phones also use w.
 #define DIGIT_PAUSE     -1 // w = .5 sec pause in PBXs and prompt in phones.  Phones also use p and , for a 2 sec pause.
 #define DIGIT_STAR      10
@@ -161,7 +161,7 @@ PG_MODULE_MAGIC;
 #define FIELD_NANP_COC                  25
 #define FIELD_NANP_SUB                  26
 #define FIELD_DIGITS_QUALIFIER          29 // Not a user visible field.
-#define FIELD_DIGITS                    30 // Digits format (just a bunch of digits).
+#define FIELD_DIGITS                    30 // Digits mode (just a bunch of digits).
 #define FIELD_EXTENSION                 31
 #define FIELD_JAPAN_AREA_CODE           32
 #define FIELD_JAPAN_SUB1                33
@@ -202,8 +202,6 @@ PG_MODULE_MAGIC;
 
 #define WHITESPACE_IS_DATA              0
 #define CONFIRM_IS_DATA                 0
-#define PAUSE_IS_DATA                   0
-
 #define PAUSE_IS_DATA                   0
 
 #define CALLING_CODE_FORMATTING_MAX_LEN 7
@@ -455,9 +453,7 @@ static int enum_label_cmp(const void *left, const void *right) {
  *
  *    PG_RETURN_OID(label_oids[GREEN]);
  */
-void
-getEnumLabelOids(const char *typname, EnumLabel labels[], Oid oid_out[], int count)
-{
+void getEnumLabelOids(const char *typname, EnumLabel labels[], Oid oid_out[], int count) {
     CatCList   *list;
     Oid         enumtypoid;
     int         total;
@@ -502,7 +498,7 @@ static void set_parse_out(struct digit_letter digit_letter, struct parse_buffer 
     int field_changed = 0;
     int pause_count;
     if (parse_out->digit_pos_next != 0) {
-        // Only needed for the digits format.
+        // Only needed for the digits mode.
         if (digit_letter.value == DIGIT_SPECIAL) {
             if (WHITESPACE_IS_DATA) {
                 if (parse_out->digit_values[parse_out->digit_pos_next - 1] == digit_letter.value) {
@@ -7454,41 +7450,20 @@ static uint additional_space_count(struct parse_buffer * parse_in) {
 }
 
 static void digits_format(struct parse_buffer * parse_in, char * formatted_digits, enum TelephoneFormat format_type,
-                          int field_index, int calling_code,
-    int area_code, int prefix, int subscriber, int extension, int letters, int pause_confirm) {
+                          int calling_code, int area_code, int prefix, int subscriber, int extension, int letters,
+                          int pause_confirm) {
     int digit_index;
-    int field_count = 0;
     int text_index = 0;
     int prior_field = FIELD_INVALID;
     int add_whitespace_next = 0;
     int add_confirm_next = 0;
     int add_pause_next = 0;
+    int text_index_prior;
     for(digit_index = 0; digit_index < parse_in->digit_pos_next; ++digit_index) {
         char digit_value        = parse_in->digit_values[digit_index];
         uint value_mask         = parse_in->digit_valuesmask[digit_index];
         int  digit_field        = parse_in->digit_fields[digit_index];
         int  field_changed      = prior_field != digit_field;
-
-        if (field_changed)
-            field_count++;
-
-        if (field_index != FIELD_INVALID && field_count != field_index) {
-            prior_field = digit_field;
-            continue;
-        }
-
-        if (add_whitespace_next) {
-            formatted_digits[text_index++] = ' ';
-        }
-
-        if (add_confirm_next) {
-            formatted_digits[text_index++] = ';';
-        }
-
-        if (add_pause_next)
-            while(add_pause_next--) {
-                formatted_digits[text_index++] = ',';
-            }
 
         if (format_type != TFORM_DIGITS_ONLY)
             add_whitespace_next = (value_mask & VALUEMASK_WHITESPACE) == VALUEMASK_WHITESPACE;
@@ -7503,6 +7478,7 @@ static void digits_format(struct parse_buffer * parse_in, char * formatted_digit
         else
             value_mask = 0;
 
+        text_index_prior = text_index;
         switch (digit_field) {
             case FIELD_CALLING_CODE:
                 if (calling_code) {
@@ -7935,11 +7911,22 @@ static void digits_format(struct parse_buffer * parse_in, char * formatted_digit
                     formatted_digits[text_index++] = '?';
                 }
                 formatted_digits[text_index++] = digit_value_to_text(digit_value, value_mask);
-                /*ereport(ERROR, (
-                    errmsg("The field index %d does not exist in this telephone number.  The number of fields is %d.", field_index,
-                field_count),
-                    errhint("There is a problem with the code.")));*/
             break;
+        }
+
+        if (text_index != text_index_prior) {
+            if (add_whitespace_next) {
+                formatted_digits[text_index++] = ' ';
+            }
+
+            if (add_confirm_next) {
+                formatted_digits[text_index++] = ';';
+            }
+
+            if (add_pause_next)
+                while(add_pause_next--) {
+                    formatted_digits[text_index++] = ',';
+                }
         }
     }
 
@@ -7951,12 +7938,6 @@ static void digits_format(struct parse_buffer * parse_in, char * formatted_digit
     }
 
     formatted_digits[text_index++] = '\0';
-
-    if (field_index != FIELD_INVALID && field_index > field_count)
-        ereport(ERROR, (
-            errmsg("The field index %d does not exist in this telephone number.  The number of fields is %d.", field_index,
-                field_count),
-            errhint("Only use a field index equal to or lower than the field count.")));
 }
 
 static struct digit_letter digit_from_char(char digit_char) {
@@ -8389,14 +8370,12 @@ static int geo_is(struct parse_buffer * parse_in) {
 }
 
 PG_FUNCTION_INFO_V1(telephone_geo_is);
-Datum
-telephone_geo_is(PG_FUNCTION_ARGS)
-{
+Datum telephone_geo_is(PG_FUNCTION_ARGS) {
     bytea   *vlena      = PG_GETARG_BYTEA_P(0);
     char    *phone_hex  = VARDATA(vlena);
     int     hex_len     = VARSIZE(vlena) - VARHDRSZ;
     int     is_digits_only;
-    int     is_letter_mask;
+    int     is_mask;
 
     struct parse_buffer parse_out;
     parse_out.parse_state       = STATE_CALLING_CODE_START;  // Only valid if !is_digits_only
@@ -8412,10 +8391,10 @@ telephone_geo_is(PG_FUNCTION_ARGS)
     if (is_digits_only)
         PG_RETURN_NULL();
 
-    is_letter_mask = phone_hex[hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
+    is_mask = phone_hex[hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
 
-    if (is_letter_mask)
-        hex_len = hex_len / 3; // Remove letter mask from digits hex len.
+    if (is_mask)
+        hex_len = hex_len / 3; // Remove mask from digits hex len.
 
     {
         struct digit_letter digit_letter;
@@ -8501,7 +8480,7 @@ static void report_parse_error(struct parse_buffer * parse_in, char *phone_text,
                     text_index + 1, phone_text),
                 errhint("The code no longer considers the telephone number to be valid at this character, but prior characters may "
                     "built a telephone number that is incorrect and the problem was only detected until it got to this character.  "
-                    "Use the digits format to store this telephone number by removing the + until the code is fixed.")));
+                    "Use the digits mode to store this telephone number by removing the + until the code is fixed.")));
         case ERROR_DIGITS_INVALID:
             ereport(ERROR, (
                 errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
@@ -8515,27 +8494,27 @@ static void report_parse_error(struct parse_buffer * parse_in, char *phone_text,
                 errmsg("The code does not know the length of the telephone number for this part of the dialing plan.  The full text"
                     " is \"%s\" and the character position is %d.", phone_text, text_index + 1),
                 errhint("If this is a correct telephone number, find the dialing plan documentation and update the code.  Use the d"
-                    "igits format to store this telephone number by removing the + until the code is updated.")));
+                    "igits mode to store this telephone number by removing the + until the code is updated.")));
         case ERROR_AREA_CODE_NOT_FOUND:
             ereport(ERROR, (
                 errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
                 errmsg("The area code was not found.  The full text is \"%s\" and the character position is %d.", phone_text,
                     text_index + 1),
-                errhint("Check the area code.  If it is correct, update the code.  Use the digits format to store this telephone nu"
-                    "mber by removing the + until the code is updated.")));
+                errhint("Check the area code.  If it is correct, update the code.  Use the digits mode to store this telephone numb"
+                    "er by removing the + until the code is updated.")));
         case ERROR_NUMBER_OBSOLETE:
             ereport(ERROR, (
                 errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
                 errmsg("This telephone number might have been valid under an older dialing plan, but that dialing plan is now obsol"
                     "ete.  The full text is \"%s\" and the character position is %d.", phone_text, text_index + 1),
                 errhint("Update the telephone number to the current dialing plan.  If you must store an obsolete number, you can us"
-                    "e the digits format to store this number by removing the +.")));
+                    "e the digits mode to store this number by removing the +.")));
         case ERROR_CALLING_CODE_NEED_CODE:
             ereport(ERROR, (
                 errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
                 errmsg("The dialing plan for this calling code has not been implemented in the code.  The full text is \"%s\" and t"
                     "he character position is %d.", phone_text, text_index + 1),
-                errhint("Use the digits format to store this telephone number by removing the +.")));
+                errhint("Use the digits mode to store this telephone number by removing the +.")));
         default:
             ereport(ERROR, (
                 errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
@@ -8547,7 +8526,7 @@ static void report_parse_error(struct parse_buffer * parse_in, char *phone_text,
     }
 }
 
-static bytea * telephone_parse_buffer_to_bytea(struct parse_buffer *parse_in, int is_letter_mask, int digit_end, int digit_start) {
+static bytea * telephone_parse_buffer_to_bytea(struct parse_buffer *parse_in, int is_mask, int digit_end, int digit_start) {
     bytea  *result;
     //int is_digits_format = parse_in.parse_state == STATE_START || parse_in.parse_state == STATE_DIGITS;
     int hex_len = digit_end - digit_start;
@@ -8557,7 +8536,7 @@ static bytea * telephone_parse_buffer_to_bytea(struct parse_buffer *parse_in, in
         hex_len++;
 
     // Add for mask indicator.
-    if (is_letter_mask) {
+    if (is_mask) {
         hex_len = hex_len / 2 + parse_in->digit_pos_next + 1;
     } else {
         hex_len = hex_len / 2;
@@ -8586,7 +8565,7 @@ static bytea * telephone_parse_buffer_to_bytea(struct parse_buffer *parse_in, in
             on_nibble2 = 0;
         }
 
-        if (is_letter_mask) {
+        if (is_mask) {
             for(digit_index = 0; digit_index < parse_in->digit_pos_next; ++digit_index) {
                 hex_array[hex_index++] = parse_in->digit_valuesmask[digit_index];
             }
@@ -8607,7 +8586,7 @@ static bytea * telephone_parse_buffer_to_bytea(struct parse_buffer *parse_in, in
 }
 
 static bytea * telephone_char_to_bytea(char *phone_text) {
-    int     is_letter_mask = 0;
+    int     is_mask = 0;
     struct  parse_buffer parse_out;
 
     parse_out.parse_state = STATE_START;
@@ -8645,24 +8624,24 @@ static bytea * telephone_char_to_bytea(char *phone_text) {
         ereport(ERROR, (
             errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
             errmsg("The telephone number is not complete.  The text is \"%s\".", phone_text),
-            errhint("Add the missing digits or use the digits format to store this telephone number by removing the +.")));
+            errhint("Add the missing digits or use the digits mode to store this telephone number by removing the +.")));
 
     {
         int digit_index;
         for(digit_index = 0; digit_index < parse_out.digit_pos_next; ++digit_index) {
             if (parse_out.digit_valuesmask[digit_index] != 0)
-                is_letter_mask = 1;
+                is_mask = 1;
         }
     }
 
-    return telephone_parse_buffer_to_bytea(&parse_out, is_letter_mask, parse_out.digit_pos_next, 0);
+    return telephone_parse_buffer_to_bytea(&parse_out, is_mask, parse_out.digit_pos_next, 0);
 }
 
 static struct parse_buffer telephone_bytea_to_parse_buffer(bytea *vlena) {
     char    *phone_hex  = VARDATA(vlena);
     int     hex_len     = VARSIZE(vlena) - VARHDRSZ;
     int     is_digits_only;
-    int     is_letter_mask;
+    int     is_mask;
     int     digit_valuesmask_index;
     struct parse_buffer parse_out;
 
@@ -8676,10 +8655,10 @@ static struct parse_buffer telephone_bytea_to_parse_buffer(bytea *vlena) {
     parse_out.code_id = 0;
 
     is_digits_only = ((phone_hex[0] >> 4) & 0xF) == DIGIT_BIN_SPECIAL;
-    is_letter_mask = phone_hex[hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
+    is_mask = phone_hex[hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
 
-    if (is_letter_mask) {
-        hex_len = hex_len / 3; // Remove letter mask from digits hex len.
+    if (is_mask) {
+        hex_len = hex_len / 3; // Remove mask from digits hex len.
         digit_valuesmask_index = hex_len;
     }
 
@@ -8703,9 +8682,9 @@ static struct parse_buffer telephone_bytea_to_parse_buffer(bytea *vlena) {
 
             digit_letter.value = nibble1;
             parse_digit(digit_letter, &parse_out);
-            if (is_letter_mask) {
+            if (is_mask) {
                 if (parse_out.digit_pos_next == 0) {
-                    digit_valuesmask_index++; // Skip over digits format indicator.
+                    digit_valuesmask_index++; // Skip over digits mode indicator.
                 } else {
                     parse_out.digit_valuesmask[parse_out.digit_pos_next - 1] = phone_hex[digit_valuesmask_index++];
                 }
@@ -8719,7 +8698,7 @@ static struct parse_buffer telephone_bytea_to_parse_buffer(bytea *vlena) {
 
             digit_letter.value = nibble2;
             parse_digit(digit_letter, &parse_out);
-            if (is_letter_mask) {
+            if (is_mask) {
                 parse_out.digit_valuesmask[parse_out.digit_pos_next - 1] = phone_hex[digit_valuesmask_index++];
             }
             if (parse_out.parse_state == STATE_ERROR)
@@ -8750,7 +8729,7 @@ static char * telephone_bytea_to_char(bytea *vlena) {
     char *formatted_digits = (char *) palloc(parse_out.digit_pos_next + CALLING_CODE_FORMATTING_MAX_LEN +
         additional_space_count(&parse_out));
 
-    digits_format(&parse_out, formatted_digits, TFORM_INTERNATIONAL, FIELD_INVALID, 1, 1, 1, 1, 1, 1, 1);
+    digits_format(&parse_out, formatted_digits, TFORM_INTERNATIONAL, 1, 1, 1, 1, 1, 1, 1);
     return formatted_digits;
 }
 
@@ -8761,18 +8740,14 @@ static char * telephone_bytea_to_char(bytea *vlena) {
 PG_FUNCTION_INFO_V1(telephone_in);
 
 // String to bytea
-Datum
-telephone_in(PG_FUNCTION_ARGS)
-{
+Datum telephone_in(PG_FUNCTION_ARGS) {
     PG_RETURN_BYTEA_P(telephone_char_to_bytea(PG_GETARG_CSTRING(0)));
 }
 
 PG_FUNCTION_INFO_V1(telephone_out);
 
 // bytea to string
-Datum
-telephone_out(PG_FUNCTION_ARGS)
-{
+Datum telephone_out(PG_FUNCTION_ARGS) {
     PG_RETURN_CSTRING(telephone_bytea_to_char(PG_GETARG_BYTEA_P(0)));
 }
 
@@ -8781,9 +8756,7 @@ telephone_out(PG_FUNCTION_ARGS)
  *****************************************************************************/
 
 PG_FUNCTION_INFO_V1(telephone_to_text);
-Datum
-telephone_to_text(PG_FUNCTION_ARGS)
-{
+Datum telephone_to_text(PG_FUNCTION_ARGS) {
     char    *formatted_digits;
     text    *return_text;
 
@@ -8793,9 +8766,7 @@ telephone_to_text(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_from_text);
-Datum
-telephone_from_text(PG_FUNCTION_ARGS)
-{
+Datum telephone_from_text(PG_FUNCTION_ARGS) {
     text    *arg_text = PG_GETARG_TEXT_P(0);
     char    *phone_text = DatumGetCString(DirectFunctionCall1(textout, PointerGetDatum(arg_text)));
     PG_RETURN_BYTEA_P(telephone_char_to_bytea(phone_text));
@@ -8807,9 +8778,7 @@ telephone_from_text(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(telephone_recv);
 
-Datum
-telephone_recv(PG_FUNCTION_ARGS)
-{
+Datum telephone_recv(PG_FUNCTION_ARGS) {
     StringInfo  buf = (StringInfo) PG_GETARG_POINTER(0);
     bytea       *result;
     int         nbytes;
@@ -8823,9 +8792,7 @@ telephone_recv(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(telephone_send);
 
-Datum
-telephone_send(PG_FUNCTION_ARGS)
-{
+Datum telephone_send(PG_FUNCTION_ARGS) {
     bytea      *vlena = PG_GETARG_BYTEA_P_COPY(0);
 
     PG_RETURN_BYTEA_P(vlena);
@@ -8835,21 +8802,20 @@ telephone_send(PG_FUNCTION_ARGS)
  * Indexing functions
  *****************************************************************************/
 
-static int32 telephone_cmp_internal(bytea *vlena1, bytea *vlena2)
-{
+static int32 telephone_cmp_internal(bytea *vlena1, bytea *vlena2) {
     char    *phone_hex1 = VARDATA(vlena1);
     int     hex_len1    = VARSIZE(vlena1) - VARHDRSZ;
-    int     is_letter_mask1 = phone_hex1[hex_len1 - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
+    int     is_mask1    = phone_hex1[hex_len1 - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
     char    *phone_hex2 = VARDATA(vlena2);
     int     hex_len2    = VARSIZE(vlena2) - VARHDRSZ;
-    int     is_letter_mask2 = phone_hex2[hex_len2 - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
+    int     is_mask2    = phone_hex2[hex_len2 - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
     int     result;
 
-    if (is_letter_mask1)
-        hex_len1 = hex_len1 / 3; // Remove letter mask from digits hex len.
+    if (is_mask1)
+        hex_len1 = hex_len1 / 3; // Remove mask from digits hex len.
 
-    if (is_letter_mask2)
-        hex_len2 = hex_len2 / 3; // Remove letter mask from digits hex len.
+    if (is_mask2)
+        hex_len2 = hex_len2 / 3; // Remove mask from digits hex len.
 
     result = memcmp(phone_hex1, phone_hex2, Min(hex_len1, hex_len2));
 
@@ -8860,8 +8826,7 @@ static int32 telephone_cmp_internal(bytea *vlena1, bytea *vlena2)
 }
 
 PG_FUNCTION_INFO_V1(telephone_cmp);
-Datum telephone_cmp(PG_FUNCTION_ARGS)
-{
+Datum telephone_cmp(PG_FUNCTION_ARGS) {
     bytea    *vlena1 = PG_GETARG_BYTEA_P(0);
     bytea    *vlena2 = PG_GETARG_BYTEA_P(1);
 
@@ -8869,16 +8834,15 @@ Datum telephone_cmp(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_hash);
-Datum telephone_hash(PG_FUNCTION_ARGS)
-{
+Datum telephone_hash(PG_FUNCTION_ARGS) {
     bytea   *vlena = PG_GETARG_BYTEA_P(0);
     char    *phone_hex = VARDATA(vlena);
     int     hex_len    = VARSIZE(vlena) - VARHDRSZ;
-    int     is_letter_mask = phone_hex[hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
+    int     is_mask     = phone_hex[hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
     Datum   result;
 
-    if (is_letter_mask)
-        hex_len = hex_len / 3; // Remove letter mask from digits hex len.
+    if (is_mask)
+        hex_len = hex_len / 3; // Remove mask from digits hex len.
 
     result = hash_any((unsigned char *) phone_hex, hex_len);
 
@@ -8893,8 +8857,7 @@ Datum telephone_hash(PG_FUNCTION_ARGS)
  *****************************************************************************/
 
 PG_FUNCTION_INFO_V1(telephone_lt);
-Datum telephone_lt(PG_FUNCTION_ARGS)
-{
+Datum telephone_lt(PG_FUNCTION_ARGS) {
     bytea    *vlena1 = PG_GETARG_BYTEA_P(0);
     bytea    *vlena2 = PG_GETARG_BYTEA_P(1);
 
@@ -8902,8 +8865,7 @@ Datum telephone_lt(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_le);
-Datum telephone_le(PG_FUNCTION_ARGS)
-{
+Datum telephone_le(PG_FUNCTION_ARGS) {
     bytea    *vlena1 = PG_GETARG_BYTEA_P(0);
     bytea    *vlena2 = PG_GETARG_BYTEA_P(1);
 
@@ -8911,8 +8873,7 @@ Datum telephone_le(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_eq);
-Datum telephone_eq(PG_FUNCTION_ARGS)
-{
+Datum telephone_eq(PG_FUNCTION_ARGS) {
     bytea    *vlena1 = PG_GETARG_BYTEA_P(0);
     bytea    *vlena2 = PG_GETARG_BYTEA_P(1);
 
@@ -8920,8 +8881,7 @@ Datum telephone_eq(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_ge);
-Datum telephone_ge(PG_FUNCTION_ARGS)
-{
+Datum telephone_ge(PG_FUNCTION_ARGS) {
     bytea    *vlena1 = PG_GETARG_BYTEA_P(0);
     bytea    *vlena2 = PG_GETARG_BYTEA_P(1);
 
@@ -8938,8 +8898,7 @@ Datum telephone_gt(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_ne);
-Datum telephone_ne(PG_FUNCTION_ARGS)
-{
+Datum telephone_ne(PG_FUNCTION_ARGS) {
     bytea    *vlena1 = PG_GETARG_BYTEA_P(0);
     bytea    *vlena2 = PG_GETARG_BYTEA_P(1);
 
@@ -8951,8 +8910,7 @@ Datum telephone_ne(PG_FUNCTION_ARGS)
  *****************************************************************************/
 
 PG_FUNCTION_INFO_V1(telephone_smaller);
-Datum telephone_smaller(PG_FUNCTION_ARGS)
-{
+Datum telephone_smaller(PG_FUNCTION_ARGS) {
    bytea *left  = PG_GETARG_BYTEA_P(0);
    bytea *right = PG_GETARG_BYTEA_P(1);
    bytea *result;
@@ -8962,8 +8920,7 @@ Datum telephone_smaller(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_larger);
-Datum telephone_larger(PG_FUNCTION_ARGS)
-{
+Datum telephone_larger(PG_FUNCTION_ARGS) {
    bytea *left  = PG_GETARG_BYTEA_P(0);
    bytea *right = PG_GETARG_BYTEA_P(1);
    bytea *result;
@@ -8983,8 +8940,7 @@ static enum TelephoneMode mode_get(bytea *vlena) {
 }
 
 PG_FUNCTION_INFO_V1(telephone_to_format);
-Datum telephone_to_format(PG_FUNCTION_ARGS)
-{
+Datum telephone_to_format(PG_FUNCTION_ARGS) {
     //Telephone   *telephone      = (Telephone *) PG_GETARG_VARLENA_P(0);
     bytea       *vlena              = PG_GETARG_BYTEA_P(0);
     Oid         format_type_oid     = PG_GETARG_OID(1);
@@ -9048,15 +9004,14 @@ Datum telephone_to_format(PG_FUNCTION_ARGS)
     parse_out = telephone_bytea_to_parse_buffer(vlena);
     formatted_digits = (char *) palloc(parse_out.digit_pos_next + CALLING_CODE_FORMATTING_MAX_LEN +
         additional_space_count(&parse_out));
-    digits_format(&parse_out, formatted_digits, format_type, FIELD_INVALID, tsf_calling_code, tsf_group1, tsf_group2,
+    digits_format(&parse_out, formatted_digits, format_type, tsf_calling_code, tsf_group1, tsf_group2,
                   tsf_subscriber, tsf_extension, letters, pause_confirm);
     PG_RETURN_TEXT_P(cstring_to_text(formatted_digits));
 }
 
 
 PG_FUNCTION_INFO_V1(telephone_mode_get);
-Datum telephone_mode_get(PG_FUNCTION_ARGS)
-{
+Datum telephone_mode_get(PG_FUNCTION_ARGS) {
     bytea   *vlena      = PG_GETARG_BYTEA_P(0);
 
     init_oids_mode();
@@ -9065,13 +9020,12 @@ Datum telephone_mode_get(PG_FUNCTION_ARGS)
 
 
 PG_FUNCTION_INFO_V1(telephone_calling_code_get);
-Datum telephone_calling_code_get(PG_FUNCTION_ARGS)
-{
+Datum telephone_calling_code_get(PG_FUNCTION_ARGS) {
     bytea   *vlena      = PG_GETARG_BYTEA_P(0);
     char    *phone_hex  = VARDATA(vlena);
     int     hex_len     = VARSIZE(vlena) - VARHDRSZ;
     int     is_digits_only;
-    int     is_letter_mask;
+    int     is_mask;
 
     struct parse_buffer parse_out;
     parse_out.parse_state       = STATE_CALLING_CODE_START;  // Only valid if !is_digits_only
@@ -9087,10 +9041,10 @@ Datum telephone_calling_code_get(PG_FUNCTION_ARGS)
     if (is_digits_only)
         PG_RETURN_NULL();
 
-    is_letter_mask = phone_hex[hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
+    is_mask = phone_hex[hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
 
-    if (is_letter_mask)
-        hex_len = hex_len / 3; // Remove letter mask from digits hex len.
+    if (is_mask)
+        hex_len = hex_len / 3; // Remove mask from digits hex len.
 
     {
         struct digit_letter digit_letter;
@@ -9136,13 +9090,12 @@ Datum telephone_calling_code_get(PG_FUNCTION_ARGS)
 
 
 PG_FUNCTION_INFO_V1(telephone_service_get);
-Datum telephone_service_get(PG_FUNCTION_ARGS)
-{
+Datum telephone_service_get(PG_FUNCTION_ARGS) {
     bytea   *vlena      = PG_GETARG_BYTEA_P(0);
     char    *phone_hex  = VARDATA(vlena);
     int     hex_len     = VARSIZE(vlena) - VARHDRSZ;
     int     is_digits_only;
-    int     is_letter_mask;
+    int     is_mask;
 
     struct parse_buffer parse_out;
     parse_out.parse_state       = STATE_CALLING_CODE_START;  // Only valid if !is_digits_only
@@ -9158,10 +9111,10 @@ Datum telephone_service_get(PG_FUNCTION_ARGS)
     if (is_digits_only)
         PG_RETURN_NULL();
 
-    is_letter_mask = phone_hex[hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
+    is_mask = phone_hex[hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
 
-    if (is_letter_mask)
-        hex_len = hex_len / 3; // Remove letter mask from digits hex len.
+    if (is_mask)
+        hex_len = hex_len / 3; // Remove mask from digits hex len.
 
     init_oids_service();
     {
@@ -9211,13 +9164,12 @@ Datum telephone_service_get(PG_FUNCTION_ARGS)
 
 
 PG_FUNCTION_INFO_V1(telephone_fictitious_get);
-Datum telephone_fictitious_get(PG_FUNCTION_ARGS)
-{
+Datum telephone_fictitious_get(PG_FUNCTION_ARGS) {
     bytea   *vlena          = PG_GETARG_BYTEA_P(0);
     char    *phone_hex      = VARDATA(vlena);
     int     hex_len         = VARSIZE(vlena) - VARHDRSZ;
     int     is_digits_only;
-    int     is_letter_mask;
+    int     is_mask;
 
     struct parse_buffer parse_out;
     parse_out.parse_state       = STATE_CALLING_CODE_START;  // Only valid if !is_digits_only
@@ -9233,10 +9185,10 @@ Datum telephone_fictitious_get(PG_FUNCTION_ARGS)
     if (is_digits_only)
         PG_RETURN_NULL();
 
-    is_letter_mask = phone_hex[hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
+    is_mask = phone_hex[hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
 
-    if (is_letter_mask)
-        hex_len = hex_len / 3; // Remove letter mask from digits hex len.
+    if (is_mask)
+        hex_len = hex_len / 3; // Remove mask from digits hex len.
 
     {
         struct digit_letter digit_letter;
@@ -9476,8 +9428,7 @@ static int get_digit_end_before_field(struct parse_buffer *parse_in, uint digit_
     return digit_index;
 }
 
-static bytea * telephone_bytea_trim(bytea *value, int len)
-{
+static bytea * telephone_bytea_trim(bytea *value, int len) {
     int     new_char_len;
     char    *old_chara          = VARDATA(value);
     char    *new_chara;
@@ -9538,8 +9489,7 @@ static int get_number_of_digits(uint number) {
 
 PG_FUNCTION_INFO_V1(telephone_number_only_part);
 Datum
-telephone_number_only_part(PG_FUNCTION_ARGS)
-{
+telephone_number_only_part(PG_FUNCTION_ARGS) {
     bytea       *vlena              = PG_GETARG_BYTEA_P(0);
     struct parse_buffer parse_in    = telephone_bytea_to_parse_buffer(vlena);
     int         digit_pos           = find_first_non_number(&parse_in);
@@ -9551,8 +9501,7 @@ telephone_number_only_part(PG_FUNCTION_ARGS)
 }*/
 
 PG_FUNCTION_INFO_V1(telephone_geo_parts_get);
-Datum telephone_geo_parts_get(PG_FUNCTION_ARGS)
-{
+Datum telephone_geo_parts_get(PG_FUNCTION_ARGS) {
     bytea       *vlena              = PG_GETARG_BYTEA_P(0);
     bool        include_calling_code= PG_GETARG_BOOL(1);
     bool        include_subscriber  = PG_GETARG_BOOL(2);
@@ -9658,21 +9607,20 @@ Datum telephone_geo_parts_get(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(telephone_ident_bytes_get);
-Datum telephone_ident_bytes_get(PG_FUNCTION_ARGS)
-{
+Datum telephone_ident_bytes_get(PG_FUNCTION_ARGS) {
     bytea   *vlena          = PG_GETARG_BYTEA_P(0);
     char    *phone_hex      = VARDATA(vlena);
     int     in_hex_len      = VARSIZE(vlena) - VARHDRSZ;
-    int     is_letter_mask;
+    int     is_mask;
     char    out_hex[MAX_DIGITS];
     int     out_hex_index   = 0;
     char   *bytea_data;
     bytea  *result;
 
-    is_letter_mask = phone_hex[in_hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
+    is_mask = phone_hex[in_hex_len - 1] == DIGIT_BIN_HEX_SPECIAL_SPECIAL;
 
-    if (is_letter_mask)
-        in_hex_len = in_hex_len / 3; // Remove letter mask from digits hex len.
+    if (is_mask)
+        in_hex_len = in_hex_len / 3; // Remove mask from digits hex len.
 
     {
         int last_in_hex_index = in_hex_len - 1;
