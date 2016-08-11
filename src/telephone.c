@@ -1252,6 +1252,7 @@ static void parse_digit(struct digit_letter digit_letter, struct parse_buffer * 
                                 parse_out->service_type = TSERV_GOVERNMENT;
                             break;
                             case 500: // Non-Geographic Services
+                            case 522: // Non-Geographic Services
                             case 533: // Non-Geographic Services
                             case 544: // Non-Geographic Services
                             case 566: // Non-Geographic Services
