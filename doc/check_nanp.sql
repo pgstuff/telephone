@@ -1,5 +1,5 @@
 -- https://www.nationalnanpa.com/reports/reports_cocodes_assign.html
--- utilized codes (zip)
+-- All States / utilized codes (zip)
 
 CREATE UNLOGGED TABLE import_allutlzd (
         "State" text,
